@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Outputs
+outputs/
+results/
+logs/
+artifacts/
+*.pt
+*.pth
+*.npz
+*.npy
+
+# nnUNet runtime dirs (data lives outside repo)
+nnUNet_raw/
+nnUNet_preprocessed/
+nnUNet_results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
