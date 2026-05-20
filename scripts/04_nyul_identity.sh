@@ -36,12 +36,9 @@ FOLD=${FOLD:-0}
 DATASET_ID=500
 CONFIG=3d_fullres
 
-# Nyul knobs:
-export EDAIN_ANCHOR_TYPE=identity
-export EDAIN_OUTLIER_CLIP=percentile
-
+# Nyul subclass with anchor_type=identity, outlier_clip=percentile baked in.
 echo "[exp 3: Nyul identity] fold=$FOLD start $(date)"
 nnUNetv2_train $DATASET_ID $CONFIG $FOLD \
-    -tr nnUNetTrainerNyul \
+    -tr nnUNetTrainerNyulIdentity \
     --npz
 echo "[exp 3: Nyul identity] fold=$FOLD end $(date)"
