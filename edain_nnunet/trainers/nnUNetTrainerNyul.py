@@ -1,26 +1,23 @@
-"""nnUNetTrainerEDAIN: nnU-Net + MRIEDAIN v2 layer.
+"""nnUNetTrainerNyul: nnU-Net + Nyúl-inspired learnable spline normalization.
 
-This trainer inherits 99% of its behaviour from nnU-Net's nnUNetTrainer.
-The ONLY differences are:
+This is what we previously called "MRI-EDAIN v2" — to avoid term confusion with
+the original 4-sublayer EDAIN paper (which we now have a separate trainer for,
+nnUNetTrainerEDAINv1), we rename this to "Nyul".
 
-    1. `initialize()` is extended to:
-       a) read the per-fold training cases
-       b) precompute EDAIN artifacts (standardizer mu/sigma, theta_0,
-          per-case whole-volume gamma) on nnU-Net's preprocessed .npz files
-       c) build a MRIEDAINLayer and wrap self.network with EDAINWrapper
+The Nyul layer = input-conditional monotonic RQ-spline:
+    - 11 foreground percentiles -> hypernet -> Delta-theta (26 dims)
+    - theta = theta_0 (frozen anchor) + Delta-theta
+    - rational-quadratic spline parameterized by theta is applied voxel-wise
+    - anchor choice: 'population_nyul' (paper Nyul) or 'identity' (no-op start)
 
-    2. `train_step()` and `validation_step()` push the current batch's
-       case_ids to the wrapper so it can look up whole-volume gammas
-       (fix for bug A1).
-
-Everything else -- data augmentation, optimizer (SGD nesterov 0.99,
-weight_decay 3e-5), poly LR, DC+CE loss, deep supervision, mirroring at
-inference, EMA, AMP -- is exactly the same as the upstream nnU-Net
-baseline.
-
-Configuration: via environment variables read in initialize():
+Configuration via env vars:
     EDAIN_ANCHOR_TYPE   = 'identity' | 'population_nyul'   (default: identity)
     EDAIN_OUTLIER_CLIP  = 'none' | 'percentile'            (default: none)
+
+REQUIREMENTS
+============
+Use the same z-scored preprocessing as vanilla nnU-Net (default plans).
+Nyul reads gamma_raw from already-z-scored data.
 """
 from __future__ import annotations
 import os
@@ -49,8 +46,8 @@ from edain_nnunet.precompute.nnunet_precompute import (
 )
 
 
-class nnUNetTrainerEDAIN(nnUNetTrainer):
-    """nnU-Net + EDAIN v2 layer (input-conditional monotonic spline)."""
+class nnUNetTrainerNyul(nnUNetTrainer):
+    """nnU-Net + Nyul-inspired input-conditional monotonic spline layer."""
 
     # ----- knobs read from env (so we don't need a custom CLI) -----------
     @property
@@ -73,12 +70,12 @@ class nnUNetTrainerEDAIN(nnUNetTrainer):
             f"fold_{self.fold}_{self.anchor_type}_{self.outlier_clip}.pt"
         )
         if artifact_path.exists():
-            self.print_to_log_file(f"[EDAIN] loading cached artifacts: {artifact_path}")
+            self.print_to_log_file(f"[Nyul] loading cached artifacts: {artifact_path}")
             artifacts = load_artifacts(artifact_path)
         else:
             artifacts = self._precompute_edain()
             save_artifacts(artifacts, artifact_path)
-            self.print_to_log_file(f"[EDAIN] saved artifacts: {artifact_path}")
+            self.print_to_log_file(f"[Nyul] saved artifacts: {artifact_path}")
 
         # Build the EDAIN layer with fitted buffers.
         standardizer = CoordinateStandardizer(
@@ -106,7 +103,7 @@ class nnUNetTrainerEDAIN(nnUNetTrainer):
         self.optimizer, self.lr_scheduler = self.configure_optimizers()
 
         self.print_to_log_file(
-            f"[EDAIN] anchor={self.anchor_type} clip={self.outlier_clip} "
+            f"[Nyul] anchor={self.anchor_type} clip={self.outlier_clip} "
             f"r_0={artifacts['r_0']:.4f} "
             f"n_cases={len(artifacts['case_gammas'])}"
         )

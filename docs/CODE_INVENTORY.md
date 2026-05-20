@@ -1,142 +1,136 @@
-# 代码清单 (Code Inventory)
+# 代码清单（Code Inventory）
 
-> 这个文档列出仓库内**每一个文件**的归属、来源、行数和作用。
-> 用 🟦 / 🟩 / 🔴 / 🟨 标识归属。
+> 这个文档列出仓库内**每一个文件**的归属、来源和作用。
+> 用 🟦 / 🔵 / 🟣 / 🟨 标识归属。
 
 ## 归属图例
 
 | 标识 | 含义 | License |
 |---|---|---|
 | 🟦 UPSTREAM | nnU-Net 2.7.0 原版（未修改）| Apache 2.0 |
-| 🟩 OURS — EDAIN core | 我们的 EDAIN 层 | MIT |
-| 🔴 NYUL ANCHOR | 我们的 Nyúl 锚点拟合逻辑 | MIT |
-| 🟨 OURS — integration | 我们的 nnU-Net 集成胶水代码 | MIT |
+| 🔵 OURS — EDAIN | EDAIN v1 实现（4 sublayer，paper Sanna Passino 2024）| MIT |
+| 🟣 OURS — Nyul | Nyul 风格 spline + hypernet（我们的 v2）| MIT |
+| 🟨 OURS — Integration / helpers | nnU-Net 集成胶水代码 + 数据准备 | MIT |
 
 ---
 
-## 1. 🟦 UPSTREAM (third_party_nnunet/)
+## 1. 🟦 UPSTREAM (`third_party_nnunet/`)
 
-整个 `third_party_nnunet/` 文件夹是 [MIC-DKFZ/nnUNet v2.7.0](https://github.com/MIC-DKFZ/nnUNet) 的未修改副本。
+整个 `third_party_nnunet/` 是 [MIC-DKFZ/nnUNet v2.7.0](https://github.com/MIC-DKFZ/nnUNet) 未修改的副本。**修改总数：0 行**。
 
-| 路径 | 作用 |
+我们用 `pip install nnunetv2==2.7.0` 在 cluster 上运行（见 `requirements.txt`），仓库里保留这份副本是为了让 reviewer 能确认版本和 license。
+
+---
+
+## 2. 🔵 OURS — EDAIN v1 (`mri_edain_v1/`)
+
+实现 Sanna Passino et al. 2024 的 **4 sublayer EDAIN**：
+
+| 文件 | 标识 | 作用 |
+|---|---|---|
+| `modules/edain_v1_layer.py` | 🔵 | `EDAINv1Layer`：完整 4-sublayer 前向，含 per-sublayer 参数访问器 |
+| `modules/yeo_johnson.py` | 🔵 | h4 power transform 的可微 Yeo-Johnson 实现 |
+| `modules/percentile_stats.py` | 🔵 | per-case 统计量计算（fg_mean / fg_std / fg_p2 / fg_p98）+ JSON 缓存读写 |
+| `precompute/precompute_v1_stats.py` | 🔵 | 离线脚本，在 nnU-Net 已预处理的 raw `.npz` 上算上述统计量 |
+
+### EDAIN v1 数学（对应论文公式）
+
+```
+x_norm  = (x - fg_p2) / (fg_p98 - fg_p2)          [optional pre-rescale to ~[0,1]]
+mu_hat  = (fg_mean - fg_p2) / (fg_p98 - fg_p2)
+h1(x)   = alpha * (beta * tanh((x_norm - mu_hat)/beta) + mu_hat)
+            + (1 - alpha) * x_norm                       [outlier mit]
+h2(h1)  = h1 - m                                          [shift]
+h3(h2)  = h2 / s                                          [scale]
+h4(h3)  = YeoJohnson(h3; lambda)                          [optional power transform]
+```
+
+可学习参数：α ∈ [0,1], β ∈ [β_min, ∞), m ∈ ℝ, s ∈ (0, ∞), λ ∈ ℝ。
+
+---
+
+## 3. 🟣 OURS — Nyul (`mri_edain_v2/`)
+
+实现我们的 **input-conditional 单调 RQ-spline 归一化**：
+
+| 文件 | 标识 | 作用 |
+|---|---|---|
+| `modules/rq_spline.py` | 🟣 | RQ-spline 参数化与 forward（Durkan 2019, NeurIPS）|
+| `modules/hypernetwork.py` | 🟣 | 2 层 GELU MLP，11 → 64 → 64 → 26，Fixup 零初始化 |
+| `modules/nyul_init.py` | 🟣 | **核心 Nyul anchor 拟合**（population_nyul + identity）|
+| `modules/edain_layer.py` | 🟣 | `MRIEDAINLayer`：拼接 percentile + standardizer + hypernet + spline |
+| `modules/percentile.py` | 🟣 | 11-landmark γ 计算（Shah 2011）|
+| `modules/standardizer.py` | 🟣 | per-coordinate γ 标准化 |
+| `modules/foreground.py` | 🟣 | mask 提取（nonzero / Otsu / auto）|
+| `losses/anchor.py` | 🟣 | Function-space anchor loss |
+| `losses/kl.py` | 🟣 | KL → N(0,1) 弱正则 |
+| `losses/combined.py` | 🟣 | 三项加权组合 |
+| `training/precompute.py` | 🟣 | 离线拟合 standardizer + θ_0 |
+| `training/scheduler.py` | 🟣 | 三相 λ 调度 |
+| `training/ema.py` | 🟣 | hypernet EMA shadow |
+| `baselines/affine_hypernet.py` | 🟣 | P2 kill-switch |
+| `tests/test_modules.py` | 🟣 | 26 个单元测试 |
+
+---
+
+## 4. 🟨 INTEGRATION (`edain_nnunet/`)
+
+| 文件 | 标识 | 作用 |
+|---|---|---|
+| `trainers/nnUNetTrainerEDAINv1.py` | 🟨 | EDAIN v1（不含 h4）trainer |
+| `trainers/nnUNetTrainerEDAINv1Power.py` | 🟨 | EDAIN v1 + h4 trainer（子类继承） |
+| `trainers/nnUNetTrainerNyul.py` | 🟨 | Nyul 风格 spline trainer |
+| `network/edain_v1_wrapper.py` | 🟨 | EDAIN v1 + nnU-Net backbone 的 wrapper |
+| `network/edain_wrapper.py` | 🟨 | Nyul + nnU-Net backbone 的 wrapper |
+| `precompute/nnunet_precompute.py` | 🟨 | Nyul 离线 precompute（读 z-scored .npz）|
+| `plans/make_raw_plans.py` | 🟨 | **关键**：生成 `nnUNetPlans_raw`（NoNormalization），让 EDAIN v1 能看到 raw |
+
+---
+
+## 5. 🟨 HELPERS (`helpers/`)
+
+| 文件 | 标识 | 作用 |
+|---|---|---|
+| `prepare_nnunet_lipo.py` | 🟨 | 把 raw Lipo 数据按 nnU-Net 格式建符号链接 |
+| `make_nnunet_splits.py` | 🟨 | 把 `lipo_split.json` 翻译成 nnU-Net 的 `splits_final.json` |
+| `lipo_split.json` | 🟨 | 固定的 5-fold split（114 cases，已排除 Lipo-073）|
+
+---
+
+## 6. 🟨 SCRIPTS (`scripts/`)
+
+| 文件 | 标识 | 作用 |
+|---|---|---|
+| `00_setup_data.sh` | 🟨 | 一次性 setup：数据准备 + 两种 preprocessing + precompute |
+| `01_baseline_nnunet.sh` | 🟨 | EXP 0: 纯 nnU-Net |
+| `02_edain_v1.sh` | 🟨 | EXP 1: EDAIN v1 (h1+h2+h3) |
+| `03_edain_v1_power.sh` | 🟨 | EXP 2: EDAIN v1 + h4 |
+| `04_nyul_identity.sh` | 🟨 | EXP 3: Nyul identity anchor |
+| `05_nyul_popnyul.sh` | 🟨 | EXP 4: Nyul popnyul anchor |
+
+---
+
+## 7. 顶层文件
+
+| 文件 | 标识 |
 |---|---|
-| `third_party_nnunet/nnunetv2/` | nnU-Net Python 包 |
-| `third_party_nnunet/LICENSE` | Apache 2.0 原始许可证 |
-| `third_party_nnunet/pyproject.toml` | 版本声明（version = 2.7.0）|
-| `third_party_nnunet/documentation/` | nnU-Net 官方文档 |
-
-**修改总数：0 行**。我们用 pip 装 `nnunetv2==2.7.0` 在 cluster 上跑，本地仓库的副本是给 reviewer 看的参考。
-
----
-
-## 2. 🟩 OURS — EDAIN CORE (mri_edain_v2/)
-
-我们写的可微归一化层。**完全独立于 nnU-Net**，理论上可以接到任何 PyTorch 分割框架前面。
-
-### modules/
-
-| 文件 | LOC | 标识 | 作用 |
-|---|---|---|---|
-| `modules/rq_spline.py` | ~280 | 🟩 | Rational-quadratic 单调 spline 参数化和 forward；用 26 维 logits → SplineParams |
-| `modules/hypernetwork.py` | ~70 | 🟩 | 2-layer GELU MLP, 11→64→64→26, **Fixup 零初始化**最后一层 |
-| `modules/percentile.py` | ~95 | 🟩 | 11-landmark γ 计算 (Shah 2011)，支持 quantile 子采样 |
-| `modules/standardizer.py` | ~75 | 🟩 | 每个 percentile 维度做 (γ − μ) / σ 标准化 |
-| `modules/nyul_init.py` | ~300 | 🔴 | **核心 Nyúl 逻辑**：把训练集的 11 landmark 拟合成 spline anchor θ_0。支持两种 target：`population_nyul`（经典 Nyúl）和 `identity`（退化为 y=x）|
-| `modules/edain_layer.py` | ~255 | 🟩 | 顶层 MRIEDAINLayer：拼接 percentile + standardizer + hypernet + spline |
-| `modules/foreground.py` | ~50 | 🟩 | 三种 mask 提取方法（nonzero, Otsu, auto）|
-
-### losses/
-
-| 文件 | LOC | 标识 | 作用 |
-|---|---|---|---|
-| `losses/anchor.py` | ~95 | 🟩 | Function-space anchor loss (准则 P3)：50 点网格上 \|\|f_θ − f_θ_0\|\|² |
-| `losses/kl.py` | ~140 | 🟩 | KL(X̃ ‖ N(0,1))，soft Gaussian histogram |
-| `losses/combined.py` | ~70 | 🟩 | L = L_seg + λ_anc · L_anc + λ_kl · L_kl |
-
-### training/
-
-| 文件 | LOC | 标识 | 作用 |
-|---|---|---|---|
-| `training/precompute.py` | ~360 | 🟩 | 离线计算：对训练集每个 case 算 γ，fit standardizer 和 θ_0，存成 artifact 文件 |
-| `training/scheduler.py` | ~90 | 🟩 | 三相 λ 调度（phase 0 frozen / phase 1 anchor strong / phase 2 cosine decay）|
-| `training/ema.py` | ~80 | 🟩 | Hypernet EMA shadow（validation 时 swap_in）|
-
-### baselines/
-
-| 文件 | LOC | 标识 | 作用 |
-|---|---|---|---|
-| `baselines/affine_hypernet.py` | ~75 | 🟩 | **P2 kill-switch**：把 spline 退化成 affine 变换。如果它和 EDAIN-identity 表现相同，说明非线性没贡献 |
-
-### tests/
-
-| 文件 | LOC | 标识 | 作用 |
-|---|---|---|---|
-| `tests/test_modules.py` | ~700 | 🟩 | 26 个单元测试，覆盖 spline 单调性、anchor loss、KL、scheduler、precompute |
-
-**EDAIN core 总计：~2700 LOC**
+| `README.md` | 🟨 |
+| `LICENSE` | 🟨 (MIT) + nnU-Net Apache 2.0 notice |
+| `.gitignore` | 🟨 |
+| `requirements.txt` | 🟨 |
+| `docs/CODE_INVENTORY.md` | 🟨 (本文档) |
+| `docs/REVIEW_CHECKLIST.md` | 🟨 |
 
 ---
 
-## 3. 🟨 OURS — INTEGRATION (edain_nnunet/)
-
-我们写的"把 EDAIN 套进 nnU-Net"的胶水代码。
-
-| 文件 | LOC | 标识 | 作用 |
-|---|---|---|---|
-| `network/edain_wrapper.py` | ~55 | 🟨 | `EDAINWrapper(nn.Module)`：把 MRIEDAINLayer 包到 nnU-Net backbone 外面；通过 case_id 查表使用整卷 γ（修 bug A1）|
-| `precompute/nnunet_precompute.py` | ~140 | 🟨 | 直接读 nnU-Net 预处理好的 `.npz`，算 γ + fit θ_0（**避免重新实现 nnU-Net 的预处理**，保证训练/验证 γ 域一致）|
-| `trainers/nnUNetTrainerEDAIN.py` | ~120 | 🟨 | **核心 trainer**：继承 `nnUNetTrainer`，只 override 3 个方法：`initialize`、`train_step`、`validation_step`。其他全部从父类继承 |
-
-### scripts/
-
-| 文件 | 标识 | 作用 |
-|---|---|---|
-| `scripts/train_nnunet_vanilla.sh` | 🟨 | 纯 nnU-Net 对照（reference）|
-| `scripts/train_edain_identity_clip.sh` | 🟨 | AB 配置（identity + clip）|
-| `scripts/train_edain_identity_noclip.sh` | 🟨 | identity + 无 clip |
-| `scripts/train_edain_popnyul_clip.sh` | 🟨 | Plan A（popnyul + clip）|
-| `scripts/train_edain_popnyul_noclip.sh` | 🟨 | popnyul + 无 clip |
-
-### docs/
-
-| 文件 | 标识 | 作用 |
-|---|---|---|
-| `docs/what_changed_vs_nnunet.md` | 🟨 | 详列我们相对 nnU-Net 改了什么/没改什么 |
-| `docs/experiment_matrix.md` | 🟨 | 5 个对照实验设计 |
-
-**Integration 总计：~580 LOC + 5 个 .sh + 2 个 docs**
-
----
-
-## 4. 🟨 OURS — HELPERS (helpers/)
-
-| 文件 | LOC | 标识 | 作用 |
-|---|---|---|---|
-| `helpers/prepare_nnunet_lipo.py` | ~80 | 🟨 | 把 raw Lipo 数据按 nnU-Net 格式建符号链接到 `$nnUNet_raw/Dataset500_Lipo/` |
-| `helpers/make_nnunet_splits.py` | ~50 | 🟨 | 把我们的 `lipo_split.json` 翻译成 nnU-Net 的 `splits_final.json`（保证 5-fold CV 划分一致）|
-| `helpers/lipo_split.json` | — | 🟨 | 固定的 5-fold split（114 cases，已排除 Lipo-073 multi-tumor）|
-
----
-
-## 5. 顶层文件
-
-| 文件 | 标识 | 作用 |
-|---|---|---|
-| `README.md` | 🟨 | 项目总入口 |
-| `LICENSE` | 🟨 | MIT 许可证 + nnU-Net 的 Apache 2.0 通知 |
-| `.gitignore` | 🟨 | 标准 Python + nnU-Net 运行时目录排除 |
-| `docs/CODE_INVENTORY.md` | 🟨 | **本文档** |
-| `docs/REVIEW_CHECKLIST.md` | 🟨 | 给你 review 用的清单 |
-
----
-
-## 总计
+## 总览统计
 
 | 归属 | LOC | 文件数 |
 |---|---|---|
-| 🟦 UPSTREAM nnU-Net 2.7.0 | ~50000 | ~300 |
-| 🟩 + 🔴 OURS — EDAIN core | ~2700 | 21 |
-| 🟨 OURS — integration + helpers | ~580 + 130 = 710 | 12 + 5 (.sh) |
-| **OURS 总计** | **~3400** | **38** |
+| 🟦 nnU-Net 2.7.0 | ~50000 | ~300 |
+| 🔵 EDAIN v1 | ~500 | 5 |
+| 🟣 Nyul | ~2700 | 21 |
+| 🟨 集成 + scripts + helpers | ~1100 | 22 |
+| **OURS total** | **~4300** | **48** |
 
-**Review 范围**：~3400 行我们写的代码，全部不在 `third_party_nnunet/` 下面。
+Review 范围：~4300 行我们写的代码，全部不在 `third_party_nnunet/` 下面。
