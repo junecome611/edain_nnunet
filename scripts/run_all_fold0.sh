@@ -238,11 +238,14 @@ else
     echo "[setup]   running raw preprocessing -> $RAW_DIR"
     nnUNetv2_preprocess -d $DATASET_ID -c $CONFIG -plans_name nnUNetPlans_raw
 
-    # VERIFICATION 2: raw preprocessing must have written .npz files.
+    # VERIFICATION 2: raw preprocessing must have written per-case files.
+    # nnU-Net 2.7+ writes .b2nd, older nnU-Net writes .npz. Accept both.
+    N_B2ND=$(ls "$RAW_DIR"/*.b2nd 2>/dev/null | wc -l)
     N_NPZ=$(ls "$RAW_DIR"/*.npz 2>/dev/null | wc -l)
-    echo "[setup]   raw preprocessing wrote $N_NPZ .npz files to $RAW_DIR"
-    if [ "$N_NPZ" = "0" ]; then
-        echo "[setup] FATAL: raw preprocessing wrote 0 .npz files."
+    N_TOTAL=$((N_B2ND + N_NPZ))
+    echo "[setup]   raw preprocessing wrote $N_B2ND .b2nd + $N_NPZ .npz files to $RAW_DIR"
+    if [ "$N_TOTAL" = "0" ]; then
+        echo "[setup] FATAL: raw preprocessing wrote 0 per-case files."
         echo "[setup] Listing $RAW_DIR:"
         ls -la "$RAW_DIR" 2>/dev/null || echo "  (does not exist)"
         echo "[setup] Listing $nnUNet_preprocessed/$DATASET_NAME/ to see where files went:"
