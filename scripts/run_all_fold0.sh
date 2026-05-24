@@ -48,6 +48,11 @@ module purge
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs
 
+# If anything in the setup step fails (in particular: raw preprocessing wrote
+# 0 files), we want a clean exit instead of cascading into NaN training. The
+# verifications below print full state and exit 1 -> SLURM marks the job
+# FAILED instead of CANCELLED-due-to-timeout.
+
 # ----- environment -----
 module load Python/3.11.5-GCCcore-13.2.0
 source ~/nnunet_env/bin/activate
@@ -194,8 +199,16 @@ else
     echo "[setup] raw plans/preprocessing missing or stale -> redoing"
 
     # If a broken raw plans existed before, delete it
-    [ -f "$RAW_PLANS" ] && [ "$RAW_DI_OK" = "0" ] && rm -f "$RAW_PLANS" \
-        && echo "[setup]   removed stale $RAW_PLANS"
+    if [ -f "$RAW_PLANS" ] && [ "$RAW_DI_OK" = "0" ]; then
+        rm -f "$RAW_PLANS"
+        echo "[setup]   removed stale $RAW_PLANS"
+    fi
+
+    # Also remove any half-written RAW_DIR from a prior partial attempt.
+    if [ -d "$RAW_DIR" ]; then
+        rm -rf "$RAW_DIR"
+        echo "[setup]   removed stale (possibly half-written) $RAW_DIR"
+    fi
 
     # The earlier bug ALSO polluted the default preprocessed dir (raw
     # data was written on top of z-scored). Redo the default preprocessing
@@ -211,8 +224,33 @@ else
         --dst_plans_name nnUNetPlans_raw \
         --configurations $CONFIG
 
+    # VERIFICATION 1: make_raw_plans must have written correct data_identifier.
+    NEW_DI=$(python -c "import json; print(json.load(open('$RAW_PLANS'))['configurations']['$CONFIG']['data_identifier'])")
+    EXPECTED_DI="nnUNetPlans_raw_$CONFIG"
+    echo "[setup]   raw plans data_identifier = '$NEW_DI' (expect '$EXPECTED_DI')"
+    if [ "$NEW_DI" != "$EXPECTED_DI" ]; then
+        echo "[setup] FATAL: make_raw_plans did not set the correct data_identifier."
+        echo "[setup] Plans content:"
+        python -c "import json; print(json.dumps(json.load(open('$RAW_PLANS'))['configurations']['$CONFIG'], indent=2))"
+        exit 1
+    fi
+
     echo "[setup]   running raw preprocessing -> $RAW_DIR"
     nnUNetv2_preprocess -d $DATASET_ID -c $CONFIG -plans_name nnUNetPlans_raw
+
+    # VERIFICATION 2: raw preprocessing must have written .npz files.
+    N_NPZ=$(ls "$RAW_DIR"/*.npz 2>/dev/null | wc -l)
+    echo "[setup]   raw preprocessing wrote $N_NPZ .npz files to $RAW_DIR"
+    if [ "$N_NPZ" = "0" ]; then
+        echo "[setup] FATAL: raw preprocessing wrote 0 .npz files."
+        echo "[setup] Listing $RAW_DIR:"
+        ls -la "$RAW_DIR" 2>/dev/null || echo "  (does not exist)"
+        echo "[setup] Listing $nnUNet_preprocessed/$DATASET_NAME/ to see where files went:"
+        ls -la "$nnUNet_preprocessed/$DATASET_NAME/"
+        echo "[setup] Plans content:"
+        python -c "import json; print(json.dumps(json.load(open('$RAW_PLANS')), indent=2))" | head -50
+        exit 1
+    fi
 fi
 
 # EDAIN v1 per-case stats (fold 0 only — we run all 5 experiments on fold 0).
