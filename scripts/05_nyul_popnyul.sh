@@ -31,6 +31,9 @@ export nnUNet_compile=F
 REPO_ROOT="$SLURM_SUBMIT_DIR/.."
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 
+# Ensure our trainers are reachable by nnUNetv2_train
+python -m tools.register_trainers >/dev/null
+
 FOLD=${FOLD:-0}
 DATASET_ID=500
 CONFIG=3d_fullres

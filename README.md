@@ -72,21 +72,20 @@ export nnUNet_raw=$HOME/nnUNet_data/raw
 export nnUNet_preprocessed=$HOME/nnUNet_data/preprocessed
 export nnUNet_results=$HOME/nnUNet_data/results
 
-# 3. ONE-TIME setup: prepare data + both preprocessing variants + precompute EDAIN v1 stats
-sbatch scripts/00_setup_data.sh
+# 3. EASIEST: master driver. Setup + 5 experiments on fold 0, one sbatch.
+#    Fully idempotent / resumable — just resubmit when wall-time hits.
+sbatch scripts/run_all_fold0.sh
 
-# Wait until 00 finishes, then submit experiments (1 fold each):
+# OR: run each step manually:
+sbatch scripts/00_setup_data.sh     # one-time data preparation
 sbatch --export=ALL,FOLD=0 scripts/01_baseline_nnunet.sh        # vanilla nnU-Net
 sbatch --export=ALL,FOLD=0 scripts/02_edain_v1.sh               # EDAIN v1 (no power)
 sbatch --export=ALL,FOLD=0 scripts/03_edain_v1_power.sh         # EDAIN v1 + power
 sbatch --export=ALL,FOLD=0 scripts/04_nyul_identity.sh          # Nyul identity
 sbatch --export=ALL,FOLD=0 scripts/05_nyul_popnyul.sh           # Nyul popnyul
-
-# For 5-fold: submit each with FOLD=0,1,2,3,4
-for f in 0 1 2 3 4; do
-    sbatch --export=ALL,FOLD=$f scripts/02_edain_v1.sh
-done
 ```
+
+> **Trainer discovery**: nnU-Net only searches `<install>/training/nnUNetTrainer/` for trainer classes. We auto-register our trainers there via symlink (`tools/register_trainers.py`); this is done by `run_all_fold0.sh` and every `02-05` script, so you don't need to do anything manually. If you ever see "Could not find requested nnunet trainer", run `python -m tools.register_trainers` once.
 
 ---
 

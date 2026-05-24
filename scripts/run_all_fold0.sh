@@ -134,6 +134,11 @@ if ! python -c "import nnunetv2" 2>/dev/null; then
 fi
 python -c "import nnunetv2, importlib.metadata as m; print('nnunetv2:', m.version('nnunetv2'))"
 
+# Register our trainers into nnU-Net's search path (idempotent).
+# Without this nnUNetv2_train errors with "Could not find requested nnunet trainer".
+echo "[setup] registering EDAIN/Nyul trainers into nnU-Net's search path"
+python -m tools.register_trainers
+
 # Symlinks
 if [ ! -d "$nnUNet_raw/$DATASET_NAME/imagesTr" ] \
    || [ -z "$(ls -A "$nnUNet_raw/$DATASET_NAME/imagesTr" 2>/dev/null)" ]; then
