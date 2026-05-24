@@ -37,18 +37,25 @@ class EDAINv1Wrapper(nn.Module):
                 "_default_stats", torch.tensor([0.0, 1.0, 0.0, 1.0]))
 
     def set_current_batch(self, case_ids=None) -> None:
+        # case_ids may be a python list (our tests) OR a numpy array (nnU-Net
+        # data loader at runtime — see data_loader.py:207). Both are accepted.
         self._current_case_ids = case_ids
 
     def _lookup_stats(self, batch_size: int, device) -> torch.Tensor:
         ids = self._current_case_ids
-        if not ids or not self.case_stats_table:
+        # Handle ALL of: None / empty list / empty numpy array / empty table.
+        # Note: `not numpy_array` raises ValueError for multi-element arrays,
+        # so we explicitly use `len(...) == 0` after a None check.
+        if ids is None or len(ids) == 0 or len(self.case_stats_table) == 0:
             return self._default_stats.to(device).unsqueeze(0).expand(batch_size, -1)
+        n_ids = len(ids)
+        default_row = self._default_stats.cpu()
         rows = []
-        for cid in ids[:batch_size]:
-            if cid in self.case_stats_table:
-                rows.append(self.case_stats_table[cid])
-            else:
-                rows.append(self._default_stats.cpu())
+        for i in range(batch_size):
+            # Cycle through ids if batch_size > n_ids (e.g., sliding-window
+            # inference reuses a single case's stats for several windows).
+            cid = str(ids[i % n_ids])   # numpy.str_ -> str so dict lookup hits
+            rows.append(self.case_stats_table.get(cid, default_row))
         return torch.stack(rows, dim=0).to(device).float()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

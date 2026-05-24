@@ -67,9 +67,13 @@ def test_v1_wrapper_contract():
 
     edain = EDAINv1Layer(use_power_transform=False)
     backbone = _FakeBackbone()
-    case_stats = {"caseA": torch.tensor([300.0, 200.0, 50.0, 800.0])}
+    case_stats = {
+        "caseA": torch.tensor([300.0, 200.0, 50.0, 800.0]),
+        "caseB": torch.tensor([400.0, 180.0, 80.0, 900.0]),
+    }
     wrapper = EDAINv1Wrapper(edain, backbone, case_stats)
     _exercise_nnunet_contract(wrapper, backbone, "EDAINv1Wrapper")
+    _exercise_keys_variants(wrapper, "EDAINv1Wrapper")
 
 
 def test_v2_wrapper_contract():
@@ -85,9 +89,60 @@ def test_v2_wrapper_contract():
     edain = MRIEDAINLayer(standardizer=standardizer, theta_0=theta_0)
 
     backbone = _FakeBackbone()
-    case_gammas = {"caseA": torch.zeros(11)}
+    case_gammas = {
+        "caseA": torch.zeros(11),
+        "caseB": torch.ones(11) * 0.5,
+    }
     wrapper = EDAINWrapper(edain, backbone, case_gammas)
     _exercise_nnunet_contract(wrapper, backbone, "EDAINWrapper")
+    _exercise_keys_variants(wrapper, "EDAINWrapper")
+
+
+def _exercise_keys_variants(wrapper, name):
+    """nnU-Net's dataloader emits batch['keys'] as a numpy array of strings,
+    NOT a Python list. Our lookup must handle both, plus mismatched batch
+    sizes (sliding-window inference reuses a 1-element key array for many
+    windows). This block reproduces the runtime crash that bit us in
+    EDAIN v1 on the cluster (2025-05-21):
+        ValueError: The truth value of an array with more than one element
+        is ambiguous. Use a.any() or a.all()
+    """
+    import numpy as np
+    print(f"\n== {name}: batch['keys'] variant tests ==")
+
+    # nnU-Net always passes a numpy array of (numpy.str_) entries.
+    keys_np = np.array(["caseA", "caseB"])
+    wrapper.set_current_batch(keys_np)
+    x = torch.randn(2, 1, 8, 16, 16) * 100 + 200
+    _ = wrapper(x)
+    print(f"  [ok] numpy array of keys, batch_size matches")
+
+    # Mismatch: batch_size > len(keys) (sliding window). Should cycle.
+    keys_np_single = np.array(["caseA"])
+    wrapper.set_current_batch(keys_np_single)
+    x = torch.randn(4, 1, 8, 16, 16) * 100 + 200
+    _ = wrapper(x)
+    print(f"  [ok] batch_size=4 with single-key array (sliding-window pattern)")
+
+    # Empty keys -> default
+    wrapper.set_current_batch(np.array([], dtype=object))
+    _ = wrapper(torch.randn(1, 1, 8, 16, 16) * 100 + 200)
+    print(f"  [ok] empty numpy array -> default stats")
+
+    # None keys -> default
+    wrapper.set_current_batch(None)
+    _ = wrapper(torch.randn(1, 1, 8, 16, 16) * 100 + 200)
+    print(f"  [ok] None keys -> default stats")
+
+    # Python list (the test path we always had)
+    wrapper.set_current_batch(["caseA"])
+    _ = wrapper(torch.randn(1, 1, 8, 16, 16) * 100 + 200)
+    print(f"  [ok] python list of keys")
+
+    # Unknown case id -> shouldn't crash
+    wrapper.set_current_batch(np.array(["caseZ_unknown"]))
+    _ = wrapper(torch.randn(1, 1, 8, 16, 16) * 100 + 200)
+    print(f"  [ok] unknown case_id falls back to default")
 
 
 def _exercise_nnunet_contract(wrapper, backbone, name):

@@ -48,17 +48,22 @@ class EDAINWrapper(nn.Module):
     # forward call (done from a thin trainer hook).
     # ------------------------------------------------------------------ #
 
-    def set_current_batch(self, case_ids: Optional[list] = None) -> None:
+    def set_current_batch(self, case_ids=None) -> None:
+        # May be a list (tests) or a numpy array (nnU-Net dataloader).
         self._current_case_ids = case_ids
 
     def _lookup_gammas(self, batch_size: int, device) -> Optional[torch.Tensor]:
         ids = getattr(self, "_current_case_ids", None)
-        if not ids or not self.case_gamma_table:
+        # `not numpy_array` errors for multi-element arrays — use explicit checks.
+        if ids is None or len(ids) == 0 or len(self.case_gamma_table) == 0:
             return None
-        try:
-            rows = [self.case_gamma_table[i] for i in ids[:batch_size]]
-        except KeyError:
-            return None
+        n_ids = len(ids)
+        rows = []
+        for i in range(batch_size):
+            cid = str(ids[i % n_ids])  # numpy.str_ -> str for dict lookup
+            if cid not in self.case_gamma_table:
+                return None  # fall back to per-patch gamma computation in EDAIN
+            rows.append(self.case_gamma_table[cid])
         return torch.stack(rows, dim=0).to(device).float()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
