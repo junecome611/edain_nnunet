@@ -82,6 +82,31 @@ def test_edain_v1_power_forward():
           f"mean={y.mean():.3f}, std={y.std():.3f}")
 
 
+def test_edain_v1_with_expanded_fg_stats():
+    """REGRESSION TEST: forward must succeed when fg_stats is an EXPANDED
+    tensor (stride 0 on dim 0) such as you'd get from `t.expand(B, -1)`.
+
+    The cluster crashed with:
+        RuntimeError: unsupported operation: more than one element of the
+        written-to tensor refers to a single memory location.
+    when in-place clamp_ was applied on a view of an expanded tensor whose
+    [:, 1] slice had all elements aliasing the same memory.
+    """
+    layer = EDAINv1Layer(use_power_transform=False, rescale_with_percentile=True)
+    B = 2
+    x = torch.randn(B, 1, 8, 16, 16) * 100 + 200
+    # Build an EXPANDED stats tensor (mimics what the wrapper used to return)
+    default_stats = torch.tensor([300.0, 200.0, 50.0, 800.0])
+    fg_stats_expanded = default_stats.unsqueeze(0).expand(B, -1)
+    print(f"  test_expanded: fg_stats stride={fg_stats_expanded.stride()} "
+          f"(should have a 0 in it)")
+    assert 0 in fg_stats_expanded.stride()
+    # This must not crash
+    y = layer(x, fg_stats_expanded)
+    assert y.shape == x.shape
+    print(f"[ok] EDAIN v1 handles expanded fg_stats")
+
+
 def test_edain_v1_gradients():
     """Verify gradients flow through all 5 parameters when power is on."""
     layer = EDAINv1Layer(use_power_transform=True, rescale_with_percentile=True)
@@ -112,6 +137,7 @@ def main():
     test_edain_v1_forward_shape()
     test_edain_v1_init_near_zscore()
     test_edain_v1_power_forward()
+    test_edain_v1_with_expanded_fg_stats()
     test_edain_v1_gradients()
     print("== ALL PASSED ==")
 

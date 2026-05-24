@@ -43,20 +43,25 @@ class EDAINv1Wrapper(nn.Module):
 
     def _lookup_stats(self, batch_size: int, device) -> torch.Tensor:
         ids = self._current_case_ids
+        default_row = self._default_stats.cpu()
         # Handle ALL of: None / empty list / empty numpy array / empty table.
         # Note: `not numpy_array` raises ValueError for multi-element arrays,
         # so we explicitly use `len(...) == 0` after a None check.
         if ids is None or len(ids) == 0 or len(self.case_stats_table) == 0:
-            return self._default_stats.to(device).unsqueeze(0).expand(batch_size, -1)
+            # IMPORTANT: build a fresh contiguous tensor (stack repeats),
+            # NOT an expand() with stride 0. Otherwise the downstream EDAIN
+            # layer can hit "more than one element refers to single memory
+            # location" on its in-place ops.
+            rows = [default_row for _ in range(batch_size)]
+            return torch.stack(rows, dim=0).to(device).float().contiguous()
         n_ids = len(ids)
-        default_row = self._default_stats.cpu()
         rows = []
         for i in range(batch_size):
             # Cycle through ids if batch_size > n_ids (e.g., sliding-window
             # inference reuses a single case's stats for several windows).
             cid = str(ids[i % n_ids])   # numpy.str_ -> str so dict lookup hits
             rows.append(self.case_stats_table.get(cid, default_row))
-        return torch.stack(rows, dim=0).to(device).float()
+        return torch.stack(rows, dim=0).to(device).float().contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         fg_stats = self._lookup_stats(x.shape[0], x.device)

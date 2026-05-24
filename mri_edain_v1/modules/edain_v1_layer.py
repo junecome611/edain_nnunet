@@ -150,14 +150,24 @@ class EDAINv1Layer(nn.Module):
         if fg_stats.dim() == 1:
             fg_stats = fg_stats.unsqueeze(0)
         if fg_stats.shape[0] != B:
-            fg_stats = fg_stats[:1].expand(B, -1).contiguous()
+            fg_stats = fg_stats[:1].expand(B, -1)
+
+        # Normalize fg_stats to a fresh contiguous (B, 4) tensor on x's
+        # device/dtype.
+        #   - .to(...) handles device + dtype in one go.
+        #   - .contiguous() defends against the case where fg_stats came in as
+        #     an expanded tensor (stride 0 on dim 0). Without this, the in-place
+        #     clamp_ below would crash on "more than one element of the
+        #     written-to tensor refers to a single memory location."
+        fg_stats = fg_stats.to(device=x.device, dtype=x.dtype).contiguous()
 
         # (B, 4) -> 4 broadcastable scalars of shape (B, 1, 1, 1, 1)
+        # Use .reshape() (handles non-contig) and .clamp() (not in-place).
         view_shape = (B, 1, 1, 1, 1)
-        fg_mean = fg_stats[:, 0].view(view_shape).to(x.dtype).to(x.device)
-        fg_std = fg_stats[:, 1].view(view_shape).to(x.dtype).to(x.device).clamp_(min=1e-6)
-        fg_p2 = fg_stats[:, 2].view(view_shape).to(x.dtype).to(x.device)
-        fg_p98 = fg_stats[:, 3].view(view_shape).to(x.dtype).to(x.device)
+        fg_mean = fg_stats[:, 0].reshape(view_shape)
+        fg_std = fg_stats[:, 1].reshape(view_shape).clamp(min=1e-6)
+        fg_p2 = fg_stats[:, 2].reshape(view_shape)
+        fg_p98 = fg_stats[:, 3].reshape(view_shape)
 
         # ---- Optional pre-rescale to ~[0,1] via (p2, p98) ----
         # This is a FIXED transform (not learnable) that gives β a sensible scale.
