@@ -55,3 +55,33 @@ class EDAINv1Wrapper(nn.Module):
         fg_stats = self._lookup_stats(x.shape[0], x.device)
         x_norm = self.edain(x, fg_stats)
         return self.backbone(x_norm)
+
+    # ------------------------------------------------------------------ #
+    # Transparent attribute forwarding to backbone.
+    #
+    # Why this is needed:
+    #   nnU-Net's nnUNetTrainer.set_deep_supervision_enabled() accesses
+    #       self.network.decoder.deep_supervision = enabled
+    #   on the assumption that self.network IS a PlainConvUNet. When we
+    #   wrap it, `wrapper.decoder` would normally raise AttributeError,
+    #   blowing up on_train_start.
+    #
+    # The fix: forward unknown attribute lookups to self.backbone. This
+    # covers `.decoder`, `.encoder`, and anything else nnU-Net might add
+    # in future minor versions, without us having to chase each one.
+    #
+    # We're careful not to recurse during __init__ (before `backbone` is
+    # registered as a submodule), so we look it up via the underlying
+    # _modules dict, never through __getattr__.
+    # ------------------------------------------------------------------ #
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            modules = object.__getattribute__(self, "_modules")
+            backbone = modules.get("backbone", None) if modules else None
+            if backbone is None:
+                raise AttributeError(
+                    f"'{type(self).__name__}' has no attribute '{name}'"
+                )
+            return getattr(backbone, name)

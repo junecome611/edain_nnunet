@@ -68,3 +68,21 @@ class EDAINWrapper(nn.Module):
             x, mask=mask, gamma_raw=gamma_raw, return_diagnostics=False
         )
         return self.backbone(x_tilde)
+
+    # ------------------------------------------------------------------ #
+    # Forward unknown attribute lookups to backbone. Specifically needed
+    # because nnU-Net's set_deep_supervision_enabled accesses
+    # `self.network.decoder.deep_supervision`. See EDAINv1Wrapper for
+    # the full explanation.
+    # ------------------------------------------------------------------ #
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            modules = object.__getattribute__(self, "_modules")
+            backbone = modules.get("backbone", None) if modules else None
+            if backbone is None:
+                raise AttributeError(
+                    f"'{type(self).__name__}' has no attribute '{name}'"
+                )
+            return getattr(backbone, name)
