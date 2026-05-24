@@ -124,6 +124,23 @@ class nnUNetTrainerEDAINv1(nnUNetTrainer):
         case_stats_table = stats_dict_to_tensor_lookup(raw_stats)
         self.print_to_log_file(
             f"[EDAINv1] loaded stats for {len(case_stats_table)} cases")
+        if len(case_stats_table) == 0:
+            # An empty stats file would silently fall back to default stats
+            # ([0,1,0,1]) which makes the percentile rescale a no-op, feeding
+            # raw (~thousands-magnitude) intensities into the backbone and
+            # NaN-ing out the model within ~2 epochs. Fail loudly here.
+            raise RuntimeError(
+                f"EDAIN v1 stats JSON is empty: {stats_path}\n"
+                f"Re-run the precompute step:\n"
+                f"  python -m mri_edain_v1.precompute.precompute_v1_stats "
+                f"--preprocessed_dir <preproc>/Dataset500_Lipo/"
+                f"nnUNetPlans_raw_3d_fullres "
+                f"--splits_json <preproc>/Dataset500_Lipo/splits_final.json "
+                f"--fold {self.fold} --output_json {stats_path}\n"
+                f"If you see 'preprocessed_dir does not exist', your raw "
+                f"preprocessing wrote to a different directory than expected "
+                f"-- regenerate the raw plans with the latest make_raw_plans.py."
+            )
 
         # Build EDAIN v1 layer
         edain = EDAINv1Layer(

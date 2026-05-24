@@ -168,40 +168,103 @@ else
     echo "[setup] splits_final.json already exists, skip"
 fi
 
-# Raw (NoNormalization) plans
+# Raw (NoNormalization) plans.
+# We MUST detect previous broken state where data_identifier was wrong
+# (an early version of make_raw_plans.py forgot to change data_identifier,
+# which caused the raw preprocessing to overwrite the default z-scored .npz
+# files and produced an empty edain_v1_stats JSON, NaN training).
 RAW_PLANS="$nnUNet_preprocessed/$DATASET_NAME/nnUNetPlans_raw.json"
-if [ ! -f "$RAW_PLANS" ]; then
-    echo "[setup] generating nnUNetPlans_raw"
+RAW_DIR="$nnUNet_preprocessed/$DATASET_NAME/nnUNetPlans_raw_$CONFIG"
+DEFAULT_DIR="$nnUNet_preprocessed/$DATASET_NAME/nnUNetPlans_$CONFIG"
+
+# Sanity: a CORRECT raw plans JSON has data_identifier == nnUNetPlans_raw_3d_fullres
+RAW_DI_OK=0
+if [ -f "$RAW_PLANS" ]; then
+    if python -c "import json,sys; j=json.load(open('$RAW_PLANS')); \
+        sys.exit(0 if j['configurations']['$CONFIG']['data_identifier'] == \
+        'nnUNetPlans_raw_$CONFIG' else 1)"; then
+        RAW_DI_OK=1
+    fi
+fi
+
+if [ "$RAW_DI_OK" = "1" ] && [ -d "$RAW_DIR" ] \
+        && [ -n "$(ls -A "$RAW_DIR" 2>/dev/null)" ]; then
+    echo "[setup] raw plans + raw preprocessing already in correct state, skip"
+else
+    echo "[setup] raw plans/preprocessing missing or stale -> redoing"
+
+    # If a broken raw plans existed before, delete it
+    [ -f "$RAW_PLANS" ] && [ "$RAW_DI_OK" = "0" ] && rm -f "$RAW_PLANS" \
+        && echo "[setup]   removed stale $RAW_PLANS"
+
+    # The earlier bug ALSO polluted the default preprocessed dir (raw
+    # data was written on top of z-scored). Redo the default preprocessing
+    # too, then the raw, into different folders.
+    echo "[setup]   removing potentially-polluted default preproc dir"
+    rm -rf "$DEFAULT_DIR"
+    echo "[setup]   rerunning default preprocessing (z-score)"
+    nnUNetv2_preprocess -d $DATASET_ID -c $CONFIG
+
+    echo "[setup]   generating raw plans (with unique data_identifier)"
     python -m edain_nnunet.plans.make_raw_plans -d $DATASET_ID \
         --src_plans_name nnUNetPlans \
         --dst_plans_name nnUNetPlans_raw \
         --configurations $CONFIG
-else
-    echo "[setup] nnUNetPlans_raw already exists, skip"
-fi
 
-# Raw preprocessing
-RAW_DIR="$nnUNet_preprocessed/$DATASET_NAME/nnUNetPlans_raw_$CONFIG"
-if [ -d "$RAW_DIR" ] && [ -n "$(ls -A "$RAW_DIR" 2>/dev/null)" ]; then
-    echo "[setup] raw preprocessing already done, skip"
-else
-    echo "[setup] running raw preprocessing"
+    echo "[setup]   running raw preprocessing -> $RAW_DIR"
     nnUNetv2_preprocess -d $DATASET_ID -c $CONFIG -plans_name nnUNetPlans_raw
 fi
 
-# EDAIN v1 per-case stats (fold 0 only — we run all 5 experiments on fold 0)
+# EDAIN v1 per-case stats (fold 0 only — we run all 5 experiments on fold 0).
+# If the JSON exists but is empty (the prior bug), regenerate it.
 STATS_JSON="$REPO_ROOT/edain_v1_stats/edain_v1_stats_fold${FOLD}.json"
 mkdir -p "$REPO_ROOT/edain_v1_stats"
-if [ ! -f "$STATS_JSON" ]; then
+STATS_OK=0
+if [ -f "$STATS_JSON" ]; then
+    if python -c "import json,sys; j=json.load(open('$STATS_JSON')); \
+        sys.exit(0 if len(j) > 0 else 1)"; then
+        STATS_OK=1
+    fi
+fi
+if [ "$STATS_OK" = "1" ]; then
+    echo "[setup] EDAIN v1 stats for fold $FOLD already exist (non-empty), skip"
+else
     echo "[setup] precomputing EDAIN v1 stats for fold $FOLD"
+    [ -f "$STATS_JSON" ] && rm -f "$STATS_JSON" \
+        && echo "[setup]   removed stale (empty) $STATS_JSON"
     python -m mri_edain_v1.precompute.precompute_v1_stats \
         --preprocessed_dir "$RAW_DIR" \
         --splits_json     "$SPLITS" \
         --output_json     "$STATS_JSON" \
         --fold $FOLD
-else
-    echo "[setup] EDAIN v1 stats for fold $FOLD already exist, skip"
 fi
+
+# Sanity check: any stale checkpoints from runs with NaN'd weights must
+# be removed so training restarts fresh on this fold.
+for trainer_plans in \
+    "nnUNetTrainerEDAINv1__nnUNetPlans_raw" \
+    "nnUNetTrainerEDAINv1Power__nnUNetPlans_raw" \
+    "nnUNetTrainerNyulIdentity__nnUNetPlans" \
+    "nnUNetTrainerNyulPopnyul__nnUNetPlans"; do
+    CKPT="$nnUNet_results/$DATASET_NAME/${trainer_plans}__${CONFIG}/fold_${FOLD}/checkpoint_latest.pth"
+    if [ -f "$CKPT" ]; then
+        # Quick check: is the checkpoint NaN-poisoned?
+        IS_NAN=$(python -c "
+import torch
+try:
+    c = torch.load('$CKPT', map_location='cpu', weights_only=False)
+    any_nan = any(torch.isnan(v).any() for v in c['network_weights'].values()
+                  if torch.is_tensor(v) and v.is_floating_point())
+    print('YES' if any_nan else 'NO')
+except Exception as e:
+    print('CHECK_FAILED')
+" 2>/dev/null)
+        if [ "$IS_NAN" = "YES" ]; then
+            echo "[setup] NaN-poisoned checkpoint detected for $trainer_plans -- nuking"
+            rm -rf "$nnUNet_results/$DATASET_NAME/${trainer_plans}__${CONFIG}/fold_${FOLD}"
+        fi
+    fi
+done
 
 echo "[setup] DONE at $(date)"
 

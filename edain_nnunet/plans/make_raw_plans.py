@@ -71,19 +71,35 @@ def main():
     with open(src_plans_path) as f:
         plans = json.load(f)
 
-    # Swap normalization for the chosen configurations
+    # Swap normalization AND data_identifier for the chosen configurations.
+    #
+    # CRITICAL: nnU-Net writes preprocessed .npz files to
+    #     $nnUNet_preprocessed/<dataset>/<data_identifier>/
+    # (see preprocessors/default_preprocessor.py and trainer:138). If we only
+    # rename `plans_name` and leave `data_identifier` untouched, the raw
+    # preprocessing OVERWRITES the default z-scored .npz files in the same
+    # folder, breaking both the vanilla baseline and our trainers. We MUST
+    # give the raw plans its own data_identifier, conventionally
+    #     <dst_plans_name>_<configuration>
+    # (matching nnU-Net's default naming).
     for cfg in args.configurations:
         if cfg not in plans["configurations"]:
             print(f"[plans] WARNING: configuration '{cfg}' not in plans, skipping")
             continue
-        schemes = plans["configurations"][cfg].get("normalization_schemes", [])
+        c = plans["configurations"][cfg]
+        schemes = c.get("normalization_schemes", [])
         new_schemes = ["NoNormalization"] * len(schemes)
-        plans["configurations"][cfg]["normalization_schemes"] = new_schemes
-        print(f"[plans] {cfg}: normalization {schemes} -> {new_schemes}")
+        c["normalization_schemes"] = new_schemes
+        old_di = c.get("data_identifier", f"nnUNetPlans_{cfg}")
+        new_di = f"{args.dst_plans_name}_{cfg}"
+        c["data_identifier"] = new_di
+        print(f"[plans] {cfg}:")
+        print(f"          normalization {schemes} -> {new_schemes}")
+        print(f"          data_identifier {old_di} -> {new_di}")
         # use_mask_for_norm: set to False for NoNormalization channels
-        use_mask = plans["configurations"][cfg].get("use_mask_for_norm", [])
+        use_mask = c.get("use_mask_for_norm", [])
         if use_mask:
-            plans["configurations"][cfg]["use_mask_for_norm"] = [False] * len(use_mask)
+            c["use_mask_for_norm"] = [False] * len(use_mask)
 
     plans["plans_name"] = args.dst_plans_name
 

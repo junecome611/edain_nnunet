@@ -99,13 +99,38 @@ def main():
     print(f"[precompute] fold {args.fold}: {len(train_ids)} training cases")
     print(f"[precompute] reading from {args.preprocessed_dir}")
 
+    if not args.preprocessed_dir.exists():
+        raise FileNotFoundError(
+            f"preprocessed_dir does not exist: {args.preprocessed_dir}\n"
+            f"Did you run `nnUNetv2_preprocess -d <id> -c 3d_fullres "
+            f"-plans_name nnUNetPlans_raw`?"
+        )
+
     stats = precompute_v1_stats_from_npz(
         preprocessed_dir=args.preprocessed_dir,
         train_case_ids=train_ids,
         method=args.method,
     )
+    if len(stats) == 0:
+        # Sanity check: 0 cases means the preprocessed_dir didn't contain ANY
+        # of the expected .npz files. The trainer would silently fall back to
+        # default-stats and the network would NaN out within a few epochs.
+        # Fail loudly instead so the user catches this at setup time.
+        found_npz = sorted(args.preprocessed_dir.glob("*.npz"))
+        raise RuntimeError(
+            f"precompute produced 0 stats. Expected to find .npz files matching "
+            f"the {len(train_ids)} training case IDs from "
+            f"{args.splits_json} (e.g. '{train_ids[0]}.npz') under "
+            f"{args.preprocessed_dir}.\n"
+            f"What's actually there: {len(found_npz)} .npz file(s); "
+            f"first few: {[p.name for p in found_npz[:5]]}\n"
+            f"Most likely cause: the raw preprocessing wrote to a different "
+            f"directory than expected. Check that the plans JSON has a "
+            f"distinct `data_identifier` (e.g. 'nnUNetPlans_raw_3d_fullres') "
+            f"and re-run nnUNetv2_preprocess."
+        )
     save_stats_dict(stats, args.output_json)
-    print(f"[precompute] saved -> {args.output_json}")
+    print(f"[precompute] saved {len(stats)} cases -> {args.output_json}")
 
 
 if __name__ == "__main__":
