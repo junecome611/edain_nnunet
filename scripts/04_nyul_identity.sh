@@ -6,6 +6,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:1
+# Only gpu005/gpu006 are known-good; other nodes have broken GPUs.
+#SBATCH --nodelist=gpu[005-006]
 #SBATCH -o logs/slurm_%x_%j.out
 #SBATCH -e logs/slurm_%x_%j.err
 
