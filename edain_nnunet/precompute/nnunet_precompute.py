@@ -1,9 +1,15 @@
-"""Precompute EDAIN artifacts on nnU-Net's preprocessed .npz files.
+"""Precompute EDAIN artifacts on nnU-Net's preprocessed cases.
 
 The crucial property here is that we read the EXACT same per-case tensor that
 nnU-Net's training loop will see (after z-score, foreground crop, etc.).
 This eliminates the train/inference gamma-domain mismatch (bug A1) that
 plagued the old custom-MONAI pipeline.
+
+Works with BOTH nnU-Net storage formats:
+    - nnU-Net <= 2.6 wrote .npz files (nnUNetDatasetNumpy)
+    - nnU-Net >= 2.7 writes .b2nd files (nnUNetDatasetBlosc2, blosc2 backend)
+We delegate format detection + loading to nnU-Net's `infer_dataset_class`
+so this stays compatible across versions.
 
 Output:
     PrecomputeArtifacts with:
@@ -23,20 +29,6 @@ from mri_edain_v2.modules.nyul_init import (
     fit_population_nyul_theta_0,
     compute_non_affineness,
 )
-
-
-def _load_nnunet_case(npz_path: Path) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Load a nnU-Net preprocessed case. Returns (X, mask).
-
-    nnU-Net stores preprocessed data as 'data' of shape (C, D, H, W) and a
-    'seg' channel. Background after z-score (with use_mask_for_norm) is 0;
-    we use (X != 0) as the foreground mask, same as the trainer will see.
-    """
-    arr = np.load(str(npz_path))
-    data = arr["data"]  # (C, D, H, W), already z-scored
-    X = torch.from_numpy(data[0]).float()
-    mask = X != 0.0
-    return X, mask
 
 
 def precompute_from_nnunet_preprocessed(
@@ -72,19 +64,27 @@ def precompute_from_nnunet_preprocessed(
         print(f"[precompute] reading {len(train_case_ids)} cases from "
               f"{preprocessed_dir}")
 
+    # Auto-detect b2nd vs npz storage. The returned class has a .load_case
+    # method that yields (data, seg, seg_prev, properties).
+    from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
+
+    dataset_cls = infer_dataset_class(str(preprocessed_dir))
+    if verbose:
+        print(f"[precompute] detected dataset class: {dataset_cls.__name__}")
+    ds = dataset_cls(str(preprocessed_dir), identifiers=list(train_case_ids))
+
     case_gammas: Dict[str, torch.Tensor] = {}
     gamma_rows: List[torch.Tensor] = []
     n_failed = 0
 
     for i, cid in enumerate(train_case_ids):
-        npz_path = preprocessed_dir / f"{cid}.npz"
-        if not npz_path.exists():
-            n_failed += 1
-            if verbose:
-                print(f"  [{i+1}/{len(train_case_ids)}] MISSING: {npz_path.name}")
-            continue
         try:
-            X, mask = _load_nnunet_case(npz_path)
+            data, _seg, _prev, _props = ds.load_case(cid)
+            # data shape: (C, D, H, W). blosc2 returns a lazy NDArray;
+            # np.asarray materialises it to a real ndarray.
+            volume = np.asarray(data[0])
+            X = torch.from_numpy(volume).float()
+            mask = X != 0.0
             if outlier_clip == "percentile":
                 fg = X[mask]
                 lo, hi = torch.quantile(
@@ -96,7 +96,8 @@ def precompute_from_nnunet_preprocessed(
         except Exception as e:
             n_failed += 1
             if verbose:
-                print(f"  [{i+1}/{len(train_case_ids)}] FAILED {cid}: {e}")
+                print(f"  [{i+1}/{len(train_case_ids)}] FAILED {cid}: "
+                      f"{type(e).__name__}: {e}")
             continue
 
         case_gammas[cid] = gamma
@@ -106,7 +107,31 @@ def precompute_from_nnunet_preprocessed(
                   f"gamma[0,5,10]=({gamma[0]:.3f},{gamma[5]:.3f},{gamma[10]:.3f})")
 
     if len(gamma_rows) < 2:
-        raise RuntimeError(f"only {len(gamma_rows)} cases ok; cannot fit")
+        # Same defensive diagnostics as the v1 precompute: surface what's
+        # actually on disk so the user can spot naming / data_identifier
+        # mismatches at setup time instead of NaN-ing during training.
+        found_npz = sorted(preprocessed_dir.glob("*.npz"))
+        found_b2nd = sorted(preprocessed_dir.glob("*.b2nd"))
+        found_pkl = sorted(preprocessed_dir.glob("*.pkl"))
+        first_id = train_case_ids[0] if train_case_ids else "<none>"
+        raise RuntimeError(
+            f"only {len(gamma_rows)} cases ok; cannot fit. Expected per-case "
+            f"files matching the {len(train_case_ids)} training IDs (e.g. "
+            f"'{first_id}.b2nd' or '{first_id}.npz') under {preprocessed_dir}.\n"
+            f"What's actually there:\n"
+            f"  {len(found_b2nd)} .b2nd file(s); first few: "
+            f"{[p.name for p in found_b2nd[:5]]}\n"
+            f"  {len(found_npz)} .npz file(s); first few: "
+            f"{[p.name for p in found_npz[:5]]}\n"
+            f"  {len(found_pkl)} .pkl file(s)\n"
+            f"Most likely causes:\n"
+            f"  1. file naming mismatch between splits_final.json IDs and "
+            f"per-case files.\n"
+            f"  2. preprocessing wrote to a different directory than expected. "
+            f"Check the plans JSON's `data_identifier`.\n"
+            f"  3. {n_failed} case(s) failed to load — check the FAILED lines "
+            f"above."
+        )
 
     raw_gammas = torch.stack(gamma_rows, dim=0)
 
