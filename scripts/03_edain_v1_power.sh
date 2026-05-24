@@ -54,8 +54,14 @@ export EDAIN_V1_LR_SCALE=1
 export EDAIN_V1_LR_POWER=10
 
 echo "[exp 2: EDAIN v1 + power] fold=$FOLD start $(date)"
+LATEST="$nnUNet_results/Dataset500_Lipo/nnUNetTrainerEDAINv1Power__nnUNetPlans_raw__${CONFIG}/fold_${FOLD}/checkpoint_latest.pth"
+CONT_FLAG=""
+if [ -f "$LATEST" ]; then
+    echo "[exp 2: EDAIN v1 + power] resuming from $LATEST"
+    CONT_FLAG="--c"
+fi
 nnUNetv2_train $DATASET_ID $CONFIG $FOLD \
     -tr nnUNetTrainerEDAINv1Power \
     -p nnUNetPlans_raw \
-    --npz
+    --npz $CONT_FLAG
 echo "[exp 2: EDAIN v1 + power] fold=$FOLD end $(date)"

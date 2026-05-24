@@ -36,5 +36,11 @@ DATASET_ID=500
 CONFIG=3d_fullres
 
 echo "[exp 0: vanilla] fold=$FOLD start $(date)"
-nnUNetv2_train $DATASET_ID $CONFIG $FOLD --npz
+LATEST="$nnUNet_results/Dataset500_Lipo/nnUNetTrainer__nnUNetPlans__${CONFIG}/fold_${FOLD}/checkpoint_latest.pth"
+CONT_FLAG=""
+if [ -f "$LATEST" ]; then
+    echo "[exp 0: vanilla] resuming from $LATEST"
+    CONT_FLAG="--c"
+fi
+nnUNetv2_train $DATASET_ID $CONFIG $FOLD --npz $CONT_FLAG
 echo "[exp 0: vanilla] fold=$FOLD end $(date)"

@@ -42,7 +42,13 @@ CONFIG=3d_fullres
 
 # Nyul subclass with anchor_type=population_nyul, outlier_clip=none baked in.
 echo "[exp 4: Nyul popnyul] fold=$FOLD start $(date)"
+LATEST="$nnUNet_results/Dataset500_Lipo/nnUNetTrainerNyulPopnyul__nnUNetPlans__${CONFIG}/fold_${FOLD}/checkpoint_latest.pth"
+CONT_FLAG=""
+if [ -f "$LATEST" ]; then
+    echo "[exp 4: Nyul popnyul] resuming from $LATEST"
+    CONT_FLAG="--c"
+fi
 nnUNetv2_train $DATASET_ID $CONFIG $FOLD \
     -tr nnUNetTrainerNyulPopnyul \
-    --npz
+    --npz $CONT_FLAG
 echo "[exp 4: Nyul popnyul] fold=$FOLD end $(date)"

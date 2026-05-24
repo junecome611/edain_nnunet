@@ -56,8 +56,15 @@ export EDAIN_V1_LR_SHIFT=1
 export EDAIN_V1_LR_SCALE=1
 
 echo "[exp 1: EDAIN v1] fold=$FOLD start $(date)"
+# Auto-resume from latest checkpoint if present (safe to cancel+resubmit).
+LATEST="$nnUNet_results/Dataset500_Lipo/nnUNetTrainerEDAINv1__nnUNetPlans_raw__${CONFIG}/fold_${FOLD}/checkpoint_latest.pth"
+CONT_FLAG=""
+if [ -f "$LATEST" ]; then
+    echo "[exp 1: EDAIN v1] resuming from $LATEST"
+    CONT_FLAG="--c"
+fi
 nnUNetv2_train $DATASET_ID $CONFIG $FOLD \
     -tr nnUNetTrainerEDAINv1 \
     -p nnUNetPlans_raw \
-    --npz
+    --npz $CONT_FLAG
 echo "[exp 1: EDAIN v1] fold=$FOLD end $(date)"

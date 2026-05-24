@@ -102,16 +102,24 @@ def install(verbose: bool = True) -> Path:
                     print(f"[register] {dst.name}: copy already up-to-date, skip")
                 continue
             dst.unlink()
-        # Try symlink first, fall back to copy
+        # Try symlink first, fall back to copy.
+        # FileExistsError can happen when 4 parallel sbatch jobs all hit this
+        # at the same time — just skip if another process beat us to it.
         try:
             os.symlink(src, dst)
             if verbose:
                 print(f"[register] symlink {dst} -> {src}")
-        except OSError as e:
-            # Windows without admin, or filesystem doesn't support symlinks
-            shutil.copy2(src, dst)
+        except FileExistsError:
             if verbose:
-                print(f"[register] copy {src} -> {dst}  ({e.strerror})")
+                print(f"[register] {dst.name}: appeared concurrently, skip")
+        except OSError as e:
+            try:
+                shutil.copy2(src, dst)
+                if verbose:
+                    print(f"[register] copy {src} -> {dst}  ({e.strerror})")
+            except FileExistsError:
+                if verbose:
+                    print(f"[register] {dst.name}: appeared concurrently, skip")
 
     if verbose:
         print(f"[register] DONE. Trainers reachable at:")
