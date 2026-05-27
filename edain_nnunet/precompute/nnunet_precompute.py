@@ -99,8 +99,20 @@ def precompute_from_nnunet_preprocessed(
             mask = X != 0.0
             if outlier_clip == "percentile":
                 fg = X[mask]
+                # torch.quantile has a hard 2**24 element cap (silent OOM-ish
+                # crash with "input tensor is too large" above that). For
+                # large Lipo cases (>17M foreground voxels) we have to
+                # subsample first. Random with-replacement sampling is
+                # statistically tight for percentile estimation at this
+                # sample size.
+                _MAX_Q = (1 << 24) - 1
+                fg_for_q = fg.float()
+                if fg_for_q.numel() > _MAX_Q:
+                    idx = torch.randint(0, fg_for_q.numel(), (_MAX_Q,),
+                                        device=fg_for_q.device)
+                    fg_for_q = fg_for_q[idx]
                 lo, hi = torch.quantile(
-                    fg.float(),
+                    fg_for_q,
                     torch.tensor([0.005, 0.995], dtype=torch.float32),
                 )
                 X = X.clamp(min=lo.item(), max=hi.item())
