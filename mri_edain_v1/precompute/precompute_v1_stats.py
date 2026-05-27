@@ -101,8 +101,17 @@ def main():
         splits = json.load(f)
     if not 0 <= args.fold < len(splits):
         raise ValueError(f"fold {args.fold} out of range (have {len(splits)} splits)")
+    # Include BOTH train and val cases. The trainer needs train stats during
+    # training, and the same wrapper needs val stats during the post-training
+    # `perform_actual_validation` sliding-window inference. If val stats are
+    # missing, the wrapper silently falls back to a default (mean across
+    # train cases) that can be severely distorted by intensity-outlier cases
+    # — observed train-eval gap of ~0.12 dice on fold 0.
     train_ids = splits[args.fold]["train"]
-    print(f"[precompute] fold {args.fold}: {len(train_ids)} training cases")
+    val_ids   = splits[args.fold]["val"]
+    all_ids = list(train_ids) + list(val_ids)
+    print(f"[precompute] fold {args.fold}: {len(train_ids)} train + "
+          f"{len(val_ids)} val = {len(all_ids)} cases total")
     print(f"[precompute] reading from {args.preprocessed_dir}")
 
     if not args.preprocessed_dir.exists():
@@ -114,7 +123,7 @@ def main():
 
     stats = precompute_v1_stats_from_npz(
         preprocessed_dir=args.preprocessed_dir,
-        train_case_ids=train_ids,
+        train_case_ids=all_ids,
         method=args.method,
     )
     if len(stats) == 0:
@@ -127,8 +136,8 @@ def main():
         found_pkl = sorted(args.preprocessed_dir.glob("*.pkl"))
         raise RuntimeError(
             f"precompute produced 0 stats. Expected to find case files matching "
-            f"the {len(train_ids)} training case IDs from "
-            f"{args.splits_json} (e.g. '{train_ids[0]}.b2nd' or '{train_ids[0]}.npz') "
+            f"the {len(all_ids)} case IDs from "
+            f"{args.splits_json} (e.g. '{all_ids[0]}.b2nd' or '{all_ids[0]}.npz') "
             f"under {args.preprocessed_dir}.\n"
             f"What's actually there:\n"
             f"  {len(found_b2nd)} .b2nd file(s); first few: "
@@ -138,13 +147,16 @@ def main():
             f"  {len(found_pkl)} .pkl file(s)\n"
             f"Most likely causes:\n"
             f"  1. file naming mismatch: splits_final.json has IDs like "
-            f"'{train_ids[0]}' but the per-case files have different names "
+            f"'{all_ids[0]}' but the per-case files have different names "
             f"(e.g. with an extra '_MR_1' suffix).\n"
             f"  2. raw preprocessing wrote to a different directory than "
             f"expected. Check the plans JSON's `data_identifier`."
         )
     save_stats_dict(stats, args.output_json)
-    print(f"[precompute] saved {len(stats)} cases -> {args.output_json}")
+    n_train_ok = sum(1 for c in train_ids if c in stats)
+    n_val_ok   = sum(1 for c in val_ids   if c in stats)
+    print(f"[precompute] saved {len(stats)} cases ({n_train_ok}/{len(train_ids)} "
+          f"train, {n_val_ok}/{len(val_ids)} val) -> {args.output_json}")
 
 
 if __name__ == "__main__":

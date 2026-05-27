@@ -65,9 +65,13 @@ class nnUNetTrainerNyul(nnUNetTrainer):
         super().initialize()
 
         # Now precompute EDAIN artifacts, then wrap self.network.
+        # Cache filename includes a schema-version suffix ('v2') because the
+        # artifact dict layout changed when we added val-case gammas to the
+        # lookup table. Old v1 caches would silently load with only train
+        # cases and reproduce the inference bug.
         artifact_path = (
             Path(self.output_folder).parent / "edain_artifacts" /
-            f"fold_{self.fold}_{self.anchor_type}_{self.outlier_clip}.pt"
+            f"fold_{self.fold}_{self.anchor_type}_{self.outlier_clip}_v2.pt"
         )
         if artifact_path.exists():
             self.print_to_log_file(f"[Nyul] loading cached artifacts: {artifact_path}")
@@ -117,6 +121,11 @@ class nnUNetTrainerNyul(nnUNetTrainer):
         with open(splits_path) as f:
             splits = json.load(f)
         train_ids = splits[self.fold]["train"]
+        # Val cases must also be in the gamma lookup table so that the wrapper
+        # serves the correct per-case gamma during sliding-window inference.
+        # Without this, every val case fell back to per-patch gamma (or worse,
+        # to the wrong cached id), causing a ~0.12 train-eval dice gap on fold 0.
+        val_ids = splits[self.fold]["val"]
 
         # The .npz path: nnUNet stores them as
         #     <ds_name>/<plans_identifier>_<configuration>/<case>.npz
@@ -137,6 +146,7 @@ class nnUNetTrainerNyul(nnUNetTrainer):
         return precompute_from_nnunet_preprocessed(
             preprocessed_dir=pre_dir,
             train_case_ids=train_ids,
+            lookup_only_case_ids=val_ids,
             anchor_type=self.anchor_type,
             outlier_clip=self.outlier_clip,
         )
@@ -155,3 +165,29 @@ class nnUNetTrainerNyul(nnUNetTrainer):
         if case_ids is not None and hasattr(self.network, "set_current_batch"):
             self.network.set_current_batch(case_ids)
         return super().validation_step(batch)
+
+    # ----- override: plumb case_id to wrapper during sliding-window inference -
+    #
+    # See nnUNetTrainerEDAINv1.perform_actual_validation for the full
+    # rationale. Short version: nnU-Net's post-training validation loop calls
+    # predictor.predict_sliding_window_return_logits(data) without ever
+    # plumbing case_id to self.network. Our wrapper's _current_case_ids
+    # stays stale, _lookup_gammas falls back to defaults, and every val case
+    # gets the wrong gamma. Fix: swap dataset_class with a subclass whose
+    # load_case() calls set_current_batch([k]) before yielding the data.
+    def perform_actual_validation(self, save_probabilities: bool = False):
+        original_cls = self.dataset_class
+        network = self.network
+        if not hasattr(network, "set_current_batch"):
+            return super().perform_actual_validation(save_probabilities)
+
+        class _CaseIDInjectingDataset(original_cls):
+            def load_case(self_, k):
+                network.set_current_batch([k])
+                return super().load_case(k)
+
+        self.dataset_class = _CaseIDInjectingDataset
+        try:
+            return super().perform_actual_validation(save_probabilities)
+        finally:
+            self.dataset_class = original_cls

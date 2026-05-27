@@ -27,11 +27,15 @@ class EDAINv1Wrapper(nn.Module):
         # case_stats_table[case_id] = tensor[4] in order (fg_mean, fg_std, fg_p2, fg_p98)
         self.case_stats_table = case_stats_table or {}
         self._current_case_ids = None
-        # Default stats: used when case_id is missing (e.g., test-time-prediction).
-        # If the table has any entries, use the mean of all known stats.
+        # Default stats: used when case_id is missing (e.g., test-time-prediction
+        # or genuinely-unknown case). Use per-coordinate MEDIAN, not mean — a
+        # single heavy-tailed outlier case (e.g. Lipo-044 with fg_mean=146387,
+        # ~100x typical) can inflate the mean by 3x and severely distort EDAIN's
+        # pre-rescale on every default-stats lookup. Median is robust against
+        # such intensity-unit-mismatch outliers.
         if self.case_stats_table:
             stacked = torch.stack(list(self.case_stats_table.values()), dim=0)
-            self.register_buffer("_default_stats", stacked.mean(dim=0))
+            self.register_buffer("_default_stats", stacked.median(dim=0).values)
         else:
             self.register_buffer(
                 "_default_stats", torch.tensor([0.0, 1.0, 0.0, 1.0]))

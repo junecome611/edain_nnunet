@@ -244,3 +244,35 @@ class nnUNetTrainerEDAINv1(nnUNetTrainer):
             with torch.no_grad():
                 self.print_to_log_file(
                     f"[EDAINv1] {self.network.edain.extra_repr()}")
+
+    # ----- override: plumb case_id to wrapper during sliding-window inference -
+    #
+    # nnU-Net's nnUNetTrainer.perform_actual_validation iterates val cases and
+    # calls predictor.predict_sliding_window_return_logits(data) which then
+    # calls self.network(x) per sliding window. case_id is never passed
+    # downstream — the wrapper's _current_case_ids stays stale, so
+    # _lookup_stats falls back to _default_stats (mean across train stats)
+    # for every val case. With a heavy-tailed intensity outlier in the
+    # training set (e.g. Lipo-044, fg_mean=146387), default_stats are
+    # massively inflated and EDAIN's pre-rescale severely distorts inputs.
+    # Observed effect: train pseudo-dice 0.89 vs true val dice 0.77 on fold 0.
+    #
+    # Fix: swap self.dataset_class with a subclass whose load_case() also
+    # calls self.network.set_current_batch([k]). Restores in finally so the
+    # swap is local to this call.
+    def perform_actual_validation(self, save_probabilities: bool = False):
+        original_cls = self.dataset_class
+        network = self.network
+        if not hasattr(network, "set_current_batch"):
+            return super().perform_actual_validation(save_probabilities)
+
+        class _CaseIDInjectingDataset(original_cls):
+            def load_case(self_, k):
+                network.set_current_batch([k])
+                return super().load_case(k)
+
+        self.dataset_class = _CaseIDInjectingDataset
+        try:
+            return super().perform_actual_validation(save_probabilities)
+        finally:
+            self.dataset_class = original_cls
