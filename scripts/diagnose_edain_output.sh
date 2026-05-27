@@ -48,25 +48,29 @@ import sys
 sys.path.insert(0, os.environ['PYTHONPATH'].split(':')[0])
 
 # ---------- Load the trained Nyul-identity wrapper ----------
-from nnunetv2.training.nnUNetTrainer.variants.edain_register.nnUNetTrainerNyulIdentity \
-    import nnUNetTrainerNyulIdentity   # registered by register_trainers
+# Use nnU-Net's own factory so we don't have to track signature drift across
+# versions.
+from nnunetv2.run.run_training import get_trainer_from_args
 from nnunetv2.utilities.dataset_name_id_conversion import maybe_convert_to_dataset_name
 from nnunetv2.paths import nnUNet_preprocessed
-from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 from batchgenerators.utilities.file_and_folder_operations import join, load_json
 
-dataset_name = maybe_convert_to_dataset_name(500)
-plans = load_json(join(nnUNet_preprocessed, dataset_name, 'nnUNetPlans.json'))
-dataset_json = load_json(join(nnUNet_preprocessed, dataset_name, 'dataset.json'))
-
-trainer = nnUNetTrainerNyulIdentity(plans=plans, configuration='3d_fullres', fold=0,
-                                    dataset_json=dataset_json,
-                                    unpack_dataset=False, device=torch.device('cuda'))
-trainer.initialize()  # builds wrapper, loads gamma table from _v2 cache
+trainer = get_trainer_from_args(
+    dataset_name_or_id='500',
+    configuration='3d_fullres',
+    fold=0,
+    trainer_name='nnUNetTrainerNyulIdentity',
+    plans_identifier='nnUNetPlans',
+    continue_training=False,
+    device=torch.device('cuda'),
+)
 
 ckpt_path = Path(trainer.output_folder) / 'checkpoint_final.pth'
 print(f'Loading {ckpt_path}', flush=True)
-trainer.load_checkpoint(str(ckpt_path))
+trainer.load_checkpoint(str(ckpt_path))   # triggers initialize()
+
+dataset_name = maybe_convert_to_dataset_name(500)
+dataset_json = trainer.dataset_json
 trainer.network.eval()
 edain = trainer.network.edain        # the MRIEDAINLayer
 backbone = trainer.network.backbone  # the UNet
