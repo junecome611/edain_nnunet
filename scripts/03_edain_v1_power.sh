@@ -45,7 +45,6 @@ export EDAIN_V1_STATS_JSON="$REPO_ROOT/edain_v1_stats/edain_v1_stats_fold${FOLD}
 
 # h4 ON (this is the key difference from experiment 2)
 export EDAIN_V1_USE_POWER=1
-export EDAIN_V1_RESCALE_P2P98=1
 
 export EDAIN_V1_LR_ALPHA=10
 export EDAIN_V1_LR_BETA=10

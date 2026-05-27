@@ -1,43 +1,40 @@
-"""EDAIN v1 layer (4 sublayers, local-aware, with optional power transform).
+"""EDAIN v1 layer (4 sublayers, local-aware z-score formulation).
 
-Architecture (paper Section 3, with our min-max prelude):
+Faithful port of `results/lipo_v3/lipo_edain_zscore_3_nointensityaug.py` —
+the team's prior working z-score EDAIN on Lipo. No pre-rescale: the layer
+runs directly on raw MRI intensities and uses (fg_mean, fg_std) per case
+as the reference scale for OM / shift / scale.
 
-    x ─▶ [optional pre-rescale to ~[0,1] via fg_p2/fg_p98]
-       ─▶ h1 (outlier mit, alpha, beta, tanh winsorize)
-       ─▶ h2 (shift,  m)
-       ─▶ h3 (scale,  s)
-       ─▶ h4 (power transform, lambda  — OPTIONAL)
-       ─▶ x_norm
+Architecture (forward order on raw x):
 
-Why the pre-rescale?
-    The raw Lipo MRI intensity range is 0..thousands, but EDAIN's β has to live
-    in the same scale as |x - μ̂|. With raw input you need β ≈ 1300 to keep
-    tanh in its useful regime — too brittle (sensitive to extreme cases).
-    Following the team's prior work on `lipo_edain_minmax_1.py`, we add a
-    per-image robust rescale to [0,1] using (fg_p2, fg_p98) FIRST, then
-    EDAIN parameters live in their natural [0,1] scale (β ≈ 1.5, m ≈ 0).
+    raw x ─▶ h1 (outlier mit, local-aware: μ̂ = fg_mean, β raw units)
+          ─▶ h2 (shift, RELATIVE: x_om - m·fg_mean)
+          ─▶ h3 (scale, RELATIVE: / (s · fg_std))
+          ─▶ h4 (Yeo-Johnson power, λ — OPTIONAL)
+          ─▶ x_norm
 
-    This rescale itself is FIXED (uses precomputed percentiles, not learned).
-    EDAIN still does the learnable normalization on top.
+At α=1, m=1, s=1 the layer reduces to winsorized z-score:
+    x_norm = (β·tanh((x-μ)/β)) / σ
+which is the natural "z-score with outlier handling" starting point.
 
-Parameters (all global learnable scalars, one set per training run):
-    alpha   in [0, 1]            sigmoid(_alpha_raw)
-    beta    in [beta_min, inf)   softplus(_beta_raw) + beta_min
-    m       in R                 plain nn.Parameter
-    s       in (0, inf)          softplus(_s_raw) + eps
-    lambda  in R                 plain nn.Parameter (only if use_power=True)
+Parameters (all global learnable scalars):
+    alpha   in [0, 1]            sigmoid(_alpha_raw)         init 0.5
+    beta    in [beta_min, inf)   softplus(_beta_raw)+β_min   init β_init (raw units!)
+    m       in R                 plain nn.Parameter          init 1.0
+    s       in (s_min, inf)      softplus(_s_raw)+s_min      init 1.0
+    lambda  in R                 plain nn.Parameter (h4 on)  init 1.0
 
-Initial values (verified on raw Lipo by notebooks/edain_init_analysis/):
-    alpha = 0.5    moderate winsorize blend at init (paper default)
-    beta  = 1.5    on rescaled [0,1] input, tanh transitions around |x_norm|=1.5
-    m     = 0.0    no extra shift after rescale (output starts centered at 0.5)
-    s     = 1.0    no extra scale (h3 is identity at init)
-    lambda= 1.0    YJ(x; 1) = x identity (h4 is no-op at init when enabled)
+IMPORTANT — β has raw-intensity units (not dimensionless).
+    The sublayer is β·tanh((x-μ)/β) + μ, so (x-μ)/β must be dimensionless.
+    On Lipo, fg_std median ~ 270 (raw units). Pick β_init in raw units —
+    typical sensible default ~ 3·fg_std_median ≈ 800, which puts the tanh
+    transition at roughly 3σ (mild winsorization on outliers, near no-op
+    for the central distribution). Set via env var EDAIN_V1_INIT_BETA.
 
 Forward expects:
     x:        (B, 1, D, H, W) raw MRI patch (post-augmentation, NOT z-scored)
-    fg_stats: (B, 4) tensor with [fg_mean, fg_std, fg_p2, fg_p98] per sample
-              (provided by EDAINv1Wrapper via case_id lookup)
+    fg_stats: (B, 4) tensor with [fg_mean, fg_std, fg_p2, fg_p98] per sample.
+              fg_p2/fg_p98 are tolerated but UNUSED in z-score form.
 """
 from __future__ import annotations
 import numpy as np
@@ -49,25 +46,23 @@ from .yeo_johnson import yeo_johnson
 
 
 class EDAINv1Layer(nn.Module):
-    """4-sublayer EDAIN (Sanna Passino et al. 2024), local-aware."""
+    """4-sublayer EDAIN, local-aware z-score formulation."""
 
     def __init__(
         self,
         init_alpha: float = 0.5,
-        init_beta: float = 1.5,
-        init_m: float = 0.0,
-        init_s: float = 1.0,
+        init_beta: float = 800.0,    # raw-intensity units; ~3·median(fg_std) on Lipo
+        init_m: float = 1.0,         # relative coefficient (× fg_mean), 1.0 = full shift
+        init_s: float = 1.0,         # relative coefficient (× fg_std),  1.0 = full scale
         init_lambda: float = 1.0,
-        beta_min: float = 0.1,
+        beta_min: float = 1.0,
         s_min: float = 1e-3,
         use_power_transform: bool = False,
-        rescale_with_percentile: bool = True,
     ):
         super().__init__()
         self.beta_min = float(beta_min)
         self.s_min = float(s_min)
         self.use_power_transform = bool(use_power_transform)
-        self.rescale_with_percentile = bool(rescale_with_percentile)
 
         # alpha: sigmoid(_alpha_raw) -> [0, 1]
         self._alpha_raw = nn.Parameter(torch.tensor(
@@ -78,10 +73,10 @@ class EDAINv1Layer(nn.Module):
             self._inverse_softplus(max(init_beta - beta_min, 1e-3)),
             dtype=torch.float32))
 
-        # m: unconstrained
+        # m: unconstrained scalar; multiplied by fg_mean during forward
         self.m = nn.Parameter(torch.tensor(float(init_m), dtype=torch.float32))
 
-        # s: softplus(_s_raw) + s_min -> (s_min, inf)
+        # s: softplus(_s_raw) + s_min -> (s_min, inf); multiplied by fg_std
         self._s_raw = nn.Parameter(torch.tensor(
             self._inverse_softplus(max(init_s - s_min, 1e-3)),
             dtype=torch.float32))
@@ -135,66 +130,55 @@ class EDAINv1Layer(nn.Module):
 
     # ----- forward -----
     def forward(self, x: torch.Tensor, fg_stats: torch.Tensor) -> torch.Tensor:
-        """Apply EDAIN v1 transform on a batch of raw images.
+        """Apply EDAIN v1 transform (z-score form) on a batch of raw images.
 
         Args:
             x:        (B, 1, D, H, W) raw MRI values.
             fg_stats: (B, 4) tensor [fg_mean, fg_std, fg_p2, fg_p98] per sample.
+                      Only fg_mean and fg_std are used; p2/p98 are ignored.
                       If B_stats < B (sliding-window inference), broadcast.
 
         Returns:
             x_norm: same shape as x, normalized.
         """
         B = x.shape[0]
-        # Broadcast fg_stats if needed (sliding-window inference reuses 1 stats row)
         if fg_stats.dim() == 1:
             fg_stats = fg_stats.unsqueeze(0)
         if fg_stats.shape[0] != B:
             fg_stats = fg_stats[:1].expand(B, -1)
 
-        # Normalize fg_stats to a fresh contiguous (B, 4) tensor on x's
-        # device/dtype.
-        #   - .to(...) handles device + dtype in one go.
-        #   - .contiguous() defends against the case where fg_stats came in as
-        #     an expanded tensor (stride 0 on dim 0). Without this, the in-place
-        #     clamp_ below would crash on "more than one element of the
-        #     written-to tensor refers to a single memory location."
+        # Fresh contiguous tensor on x's device/dtype. .contiguous() defends
+        # against expanded tensors with stride-0 on dim 0 (would crash any
+        # downstream in-place op).
         fg_stats = fg_stats.to(device=x.device, dtype=x.dtype).contiguous()
 
-        # (B, 4) -> 4 broadcastable scalars of shape (B, 1, 1, 1, 1)
-        # Use .reshape() (handles non-contig) and .clamp() (not in-place).
         view_shape = (B, 1, 1, 1, 1)
         fg_mean = fg_stats[:, 0].reshape(view_shape)
-        fg_std = fg_stats[:, 1].reshape(view_shape).clamp(min=1e-6)
-        fg_p2 = fg_stats[:, 2].reshape(view_shape)
-        fg_p98 = fg_stats[:, 3].reshape(view_shape)
+        fg_std  = fg_stats[:, 1].reshape(view_shape).clamp(min=1e-6)
+        # fg_p2 / fg_p98 (indices 2, 3) are unused in z-score form.
 
-        # ---- Optional pre-rescale to ~[0,1] via (p2, p98) ----
-        # This is a FIXED transform (not learnable) that gives β a sensible scale.
-        if self.rescale_with_percentile:
-            range_p = (fg_p98 - fg_p2).clamp(min=1e-6)
-            x_in = (x - fg_p2) / range_p          # ~[0, 1] for the central 96%
-            mu_hat = (fg_mean - fg_p2) / range_p  # rescaled mu; usually ~0.4
-        else:
-            x_in = x
-            mu_hat = fg_mean
-
-        # ---- h1: outlier mitigation (tanh winsorization) ----
         alpha = self.alpha
         beta = self.beta
-        x_centered = x_in - mu_hat
-        x_w = beta * torch.tanh(x_centered / beta) + mu_hat
-        x_om = alpha * x_w + (1.0 - alpha) * x_in
 
-        # ---- h2: shift   h3: scale ----
-        # Combined: (x_om - m) / s
-        x_ss = (x_om - self.m) / self.s
+        # ---- h1: outlier mitigation, local-aware (μ̂ = fg_mean) ----
+        # β has raw-intensity units; (x - fg_mean)/β is dimensionless.
+        x_centered = x - fg_mean
+        x_w = beta * torch.tanh(x_centered / beta) + fg_mean
+        x_om = alpha * x_w + (1.0 - alpha) * x
+
+        # ---- h2: shift, RELATIVE to fg_mean ----
+        # At m=1, this fully subtracts fg_mean (z-score centering).
+        x_shifted = x_om - self.m * fg_mean
+
+        # ---- h3: scale, RELATIVE to fg_std ----
+        # At s=1, this fully divides by fg_std (z-score scaling).
+        x_scaled = x_shifted / (self.s * fg_std)
 
         # ---- h4: power transform (optional) ----
         if self.use_power_transform:
-            x_out = yeo_johnson(x_ss, self.lambda_param)
+            x_out = yeo_johnson(x_scaled, self.lambda_param)
         else:
-            x_out = x_ss
+            x_out = x_scaled
 
         return x_out
 
@@ -206,6 +190,5 @@ class EDAINv1Layer(nn.Module):
                 f"m={self.m.item():.4f}, "
                 f"s={self.s.item():.4f}, "
                 f"lambda={self.lambda_param.item():.4f}, "
-                f"use_power={self.use_power_transform}, "
-                f"rescale_with_percentile={self.rescale_with_percentile}"
+                f"use_power={self.use_power_transform}"
             )

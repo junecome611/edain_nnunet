@@ -107,17 +107,20 @@ sbatch --export=ALL,FOLD=0 scripts/05_nyul_popnyul.sh           # Nyul popnyul
 
 ## Initialization values (calibrated on Lipo training set)
 
-EDAIN v1 (see `notebooks/edain_init_analysis/` in the parent project for derivation):
+EDAIN v1 (z-score formulation, faithful to `results/lipo_v3/lipo_edain_zscore_3_nointensityaug.py`):
 ```
 init_alpha  = 0.5    h1 outlier-mit blend ratio (50/50 winsorize:identity at start)
-init_beta   = 1.5    tanh transition on [0,1] rescaled input
-init_m      = 0.0    no extra shift (rescaled input is already centered ~0.5)
-init_s      = 1.0    no extra scale (rescaled input is already in [0,1])
+init_beta   = 800.0  raw-intensity units; ~3·median(fg_std) on Lipo
+init_m      = 1.0    relative coefficient × fg_mean (1.0 → full z-score centering)
+init_s      = 1.0    relative coefficient × fg_std  (1.0 → full z-score scaling)
 init_lambda = 1.0    YJ(x; 1) = x  (h4 is identity at start, only learned deviates)
-beta_min    = 0.1    softplus lower bound
+beta_min    = 1.0    softplus lower bound
 ```
 
-These come with a fixed per-image rescale `(x − fg_p2) / (fg_p98 − fg_p2)` to `~[0,1]` BEFORE `h1` so β is in its natural scale. See `mri_edain_v1/modules/edain_v1_layer.py` for the full forward pass.
+No pre-rescale. EDAIN runs directly on raw MRI; OM uses `fg_mean` as the
+center and (with α=1, m=1, s=1, β large) the layer reduces to winsorized
+z-score: `y = β·tanh((x-μ)/β) / σ`. See `mri_edain_v1/modules/edain_v1_layer.py`
+for the forward pass.
 
 ---
 

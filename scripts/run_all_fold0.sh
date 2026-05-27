@@ -322,7 +322,6 @@ run_experiment "EXP 1 (EDAIN v1)" \
     "nnUNetTrainerEDAINv1" "nnUNetPlans_raw" \
     "EDAIN_V1_STATS_JSON=$STATS_JSON" \
     "EDAIN_V1_USE_POWER=0" \
-    "EDAIN_V1_RESCALE_P2P98=1" \
     "EDAIN_V1_LR_ALPHA=10" "EDAIN_V1_LR_BETA=10" \
     "EDAIN_V1_LR_SHIFT=1" "EDAIN_V1_LR_SCALE=1"
 
@@ -333,7 +332,6 @@ run_experiment "EXP 2 (EDAIN v1 + power)" \
     "nnUNetTrainerEDAINv1Power" "nnUNetPlans_raw" \
     "EDAIN_V1_STATS_JSON=$STATS_JSON" \
     "EDAIN_V1_USE_POWER=1" \
-    "EDAIN_V1_RESCALE_P2P98=1" \
     "EDAIN_V1_LR_ALPHA=10" "EDAIN_V1_LR_BETA=10" \
     "EDAIN_V1_LR_SHIFT=1" "EDAIN_V1_LR_SCALE=1" "EDAIN_V1_LR_POWER=10"
 

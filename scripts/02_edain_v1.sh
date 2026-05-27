@@ -46,8 +46,6 @@ export EDAIN_V1_STATS_JSON="$REPO_ROOT/edain_v1_stats/edain_v1_stats_fold${FOLD}
 
 # h4 OFF (this is EDAIN v1 without power transform)
 export EDAIN_V1_USE_POWER=0
-# Use percentile rescale to [0,1] before EDAIN (recommended for raw MRI)
-export EDAIN_V1_RESCALE_P2P98=1
 
 # Per-sublayer LR multipliers (defaults from paper grid search)
 export EDAIN_V1_LR_ALPHA=10

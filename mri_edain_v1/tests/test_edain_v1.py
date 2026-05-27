@@ -1,4 +1,4 @@
-"""Sanity tests for EDAIN v1 layer.
+"""Sanity tests for EDAIN v1 layer (z-score form).
 
 Run with:
     cd <repo root>
@@ -25,7 +25,7 @@ def test_edain_v1_forward_shape():
     layer = EDAINv1Layer(use_power_transform=False)
     B = 2
     x = torch.randn(B, 1, 8, 16, 16) * 200 + 300  # simulate raw MRI
-    # fg_stats: [fg_mean, fg_std, fg_p2, fg_p98]
+    # fg_stats: [fg_mean, fg_std, fg_p2, fg_p98]  (p2/p98 ignored in z-score form)
     fg_stats = torch.tensor([[300.0, 200.0, 50.0, 800.0],
                               [350.0, 180.0, 60.0, 850.0]])
     y = layer(x, fg_stats)
@@ -33,46 +33,58 @@ def test_edain_v1_forward_shape():
     print(f"[ok] forward shape preserved: {x.shape} -> {y.shape}")
 
 
-def test_edain_v1_init_near_zscore():
-    """At init (alpha=0.5, m=0, s=1, h4 off, rescale on) the layer should produce
-    something close to standard z-score for typical foreground voxels."""
+def test_edain_v1_init_is_winsorized_zscore():
+    """At α=1, m=1, s=1 (and h4 off), the layer must reduce to winsorized
+    z-score:  y = β·tanh((x-μ)/β) / σ   (no extra raw x leaks through)."""
+    # α=1 forces OM to fully replace x; β large so tanh ~ identity in central
+    # range; m=1, s=1 give exact z-score affine.
     layer = EDAINv1Layer(
-        init_alpha=0.5, init_beta=1.5, init_m=0.0, init_s=1.0,
-        use_power_transform=False, rescale_with_percentile=True,
+        init_alpha=1.0,    # full OM (no leak of raw x)
+        init_beta=1e6,     # tanh ~ identity for raw-magnitude inputs
+        init_m=1.0,
+        init_s=1.0,
+        use_power_transform=False,
     )
-    B = 1
     rng = np.random.default_rng(2025)
-    raw = rng.normal(loc=300.0, scale=200.0, size=(1, 1, 16, 32, 32)).astype(np.float32)
+    raw = rng.normal(loc=500.0, scale=200.0, size=(1, 1, 16, 32, 32)).astype(np.float32)
     raw = np.clip(raw, 1.0, 2000.0)
     x = torch.from_numpy(raw)
     fg = raw[raw > 0]
-    fg_stats = torch.tensor([[
-        float(fg.mean()),
-        float(fg.std()),
-        float(np.percentile(fg, 2.0)),
-        float(np.percentile(fg, 98.0)),
-    ]])
+    mu, sigma = float(fg.mean()), float(fg.std())
+    fg_stats = torch.tensor([[mu, sigma, 0.0, 0.0]])  # p2/p98 don't matter
     with torch.no_grad():
         y = layer(x, fg_stats)
-    # After (x - p2)/(p98 - p2), 96% should be in [0,1]. With alpha=0.5 and tanh
-    # mostly in linear regime (since beta=1.5 > typical |x_norm - mu_hat|<1),
-    # output of h1 is close to x_norm, then (x_om - 0)/1 = x_om ~ [0, 1].
+    # Expected: y = (x - mu) / sigma  (because β is huge and α=1)
+    expected = (x - mu) / sigma
+    diff = (y - expected).abs().max().item()
+    assert diff < 1e-3, f"z-score at init not recovered, max diff = {diff}"
+    print(f"[ok] α=1, m=1, s=1, β→∞ reduces to z-score (max diff {diff:.2e})")
+
+
+def test_edain_v1_default_init_centers_output():
+    """With default init (α=0.5, β=800, m=1, s=1) the output should be
+    centered near 0 with std near 1 for typical Lipo-scale inputs."""
+    layer = EDAINv1Layer(use_power_transform=False)
+    rng = np.random.default_rng(2025)
+    raw = rng.normal(loc=800.0, scale=300.0, size=(1, 1, 16, 32, 32)).astype(np.float32)
+    raw = np.clip(raw, 1.0, 4000.0)
+    x = torch.from_numpy(raw)
+    fg = raw[raw > 0]
+    fg_stats = torch.tensor([[float(fg.mean()), float(fg.std()), 0.0, 0.0]])
+    with torch.no_grad():
+        y = layer(x, fg_stats)
     y_flat = y[x > 0]
-    print(f"[ok] EDAIN v1 init forward: x ranges [{x.min():.0f},{x.max():.0f}], "
-          f"y ranges [{y_flat.min():.3f},{y_flat.max():.3f}], "
-          f"y_mean={y_flat.mean():.3f}, y_std={y_flat.std():.3f}")
-    assert y.shape == x.shape
-    # Output should be in [-1, 2] roughly (centered around ~0.4-0.5 with std ~0.2)
-    assert -2 < y_flat.mean() < 2, f"unexpected output mean: {y_flat.mean()}"
+    print(f"[ok] EDAIN v1 default init: x∈[{x.min():.0f},{x.max():.0f}], "
+          f"y_mean={y_flat.mean():.3f} (≈0), y_std={y_flat.std():.3f} (≈1)")
+    assert abs(y_flat.mean().item()) < 0.5, \
+        f"output mean too far from 0: {y_flat.mean()}"
+    assert 0.5 < y_flat.std().item() < 1.5, \
+        f"output std far from 1: {y_flat.std()}"
 
 
 def test_edain_v1_power_forward():
-    """With power on, lambda=1 should still produce ~identity-ish output."""
-    layer = EDAINv1Layer(
-        init_alpha=0.5, init_beta=1.5, init_m=0.0, init_s=1.0, init_lambda=1.0,
-        use_power_transform=True, rescale_with_percentile=True,
-    )
-    B = 1
+    """With power on, lambda=1 should still produce shape-preserving output."""
+    layer = EDAINv1Layer(use_power_transform=True, init_lambda=1.0)
     x = torch.randn(1, 1, 8, 16, 16) * 100 + 200
     fg_stats = torch.tensor([[200.0, 100.0, 50.0, 400.0]])
     with torch.no_grad():
@@ -84,24 +96,15 @@ def test_edain_v1_power_forward():
 
 def test_edain_v1_with_expanded_fg_stats():
     """REGRESSION TEST: forward must succeed when fg_stats is an EXPANDED
-    tensor (stride 0 on dim 0) such as you'd get from `t.expand(B, -1)`.
-
-    The cluster crashed with:
-        RuntimeError: unsupported operation: more than one element of the
-        written-to tensor refers to a single memory location.
-    when in-place clamp_ was applied on a view of an expanded tensor whose
-    [:, 1] slice had all elements aliasing the same memory.
-    """
-    layer = EDAINv1Layer(use_power_transform=False, rescale_with_percentile=True)
+    tensor (stride 0 on dim 0) such as you'd get from `t.expand(B, -1)`."""
+    layer = EDAINv1Layer(use_power_transform=False)
     B = 2
     x = torch.randn(B, 1, 8, 16, 16) * 100 + 200
-    # Build an EXPANDED stats tensor (mimics what the wrapper used to return)
     default_stats = torch.tensor([300.0, 200.0, 50.0, 800.0])
     fg_stats_expanded = default_stats.unsqueeze(0).expand(B, -1)
     print(f"  test_expanded: fg_stats stride={fg_stats_expanded.stride()} "
           f"(should have a 0 in it)")
     assert 0 in fg_stats_expanded.stride()
-    # This must not crash
     y = layer(x, fg_stats_expanded)
     assert y.shape == x.shape
     print(f"[ok] EDAIN v1 handles expanded fg_stats")
@@ -109,13 +112,12 @@ def test_edain_v1_with_expanded_fg_stats():
 
 def test_edain_v1_gradients():
     """Verify gradients flow through all 5 parameters when power is on."""
-    layer = EDAINv1Layer(use_power_transform=True, rescale_with_percentile=True)
+    layer = EDAINv1Layer(use_power_transform=True)
     x = torch.randn(1, 1, 4, 8, 8) * 100 + 200
     fg_stats = torch.tensor([[200.0, 100.0, 50.0, 400.0]])
     y = layer(x, fg_stats)
     loss = y.mean()
     loss.backward()
-    # Check each learnable param got a non-zero gradient
     grads = {
         "alpha": layer._alpha_raw.grad,
         "beta":  layer._beta_raw.grad,
@@ -135,7 +137,8 @@ def main():
     print("== EDAIN v1 sanity tests ==")
     test_yj_identity_at_lambda_1()
     test_edain_v1_forward_shape()
-    test_edain_v1_init_near_zscore()
+    test_edain_v1_init_is_winsorized_zscore()
+    test_edain_v1_default_init_centers_output()
     test_edain_v1_power_forward()
     test_edain_v1_with_expanded_fg_stats()
     test_edain_v1_gradients()

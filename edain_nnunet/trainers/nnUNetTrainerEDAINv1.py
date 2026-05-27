@@ -16,17 +16,15 @@ CONFIGURATION VIA ENV VARS
                             REQUIRED.
     EDAIN_V1_USE_POWER      "1" to enable h4 (Yeo-Johnson). Default: "0".
     EDAIN_V1_INIT_ALPHA     default 0.5
-    EDAIN_V1_INIT_BETA      default 1.5
-    EDAIN_V1_INIT_M         default 0.0
-    EDAIN_V1_INIT_S         default 1.0
+    EDAIN_V1_INIT_BETA      default 800.0 (raw-intensity units; ~3·median fg_std)
+    EDAIN_V1_INIT_M         default 1.0   (relative coefficient × fg_mean)
+    EDAIN_V1_INIT_S         default 1.0   (relative coefficient × fg_std)
     EDAIN_V1_INIT_LAMBDA    default 1.0
     EDAIN_V1_LR_ALPHA       LR multiplier for alpha; default 10
     EDAIN_V1_LR_BETA        LR multiplier for beta;  default 10
     EDAIN_V1_LR_SHIFT       LR multiplier for m;     default 1
     EDAIN_V1_LR_SCALE       LR multiplier for s;     default 1
     EDAIN_V1_LR_POWER       LR multiplier for lambda;default 10
-    EDAIN_V1_RESCALE_P2P98  "1" to enable percentile-based pre-rescale to [0,1].
-                            Default "1" (recommended for raw MRI).
 
 REQUIREMENTS
 ============
@@ -79,10 +77,6 @@ class nnUNetTrainerEDAINv1(nnUNetTrainer):
     @property
     def use_power_transform(self) -> bool:
         return _env_bool("EDAIN_V1_USE_POWER", False)
-
-    @property
-    def rescale_with_percentile(self) -> bool:
-        return _env_bool("EDAIN_V1_RESCALE_P2P98", True)
 
     @property
     def stats_json_path(self) -> Path:
@@ -142,15 +136,14 @@ class nnUNetTrainerEDAINv1(nnUNetTrainer):
                 f"-- regenerate the raw plans with the latest make_raw_plans.py."
             )
 
-        # Build EDAIN v1 layer
+        # Build EDAIN v1 layer (z-score form: local-aware OM + relative shift/scale)
         edain = EDAINv1Layer(
             init_alpha=_env_float("EDAIN_V1_INIT_ALPHA", 0.5),
-            init_beta=_env_float("EDAIN_V1_INIT_BETA", 1.5),
-            init_m=_env_float("EDAIN_V1_INIT_M", 0.0),
+            init_beta=_env_float("EDAIN_V1_INIT_BETA", 800.0),
+            init_m=_env_float("EDAIN_V1_INIT_M", 1.0),
             init_s=_env_float("EDAIN_V1_INIT_S", 1.0),
             init_lambda=_env_float("EDAIN_V1_INIT_LAMBDA", 1.0),
             use_power_transform=self.use_power_transform,
-            rescale_with_percentile=self.rescale_with_percentile,
         )
         self.print_to_log_file(
             f"[EDAINv1] layer init: {edain.extra_repr()}")
@@ -167,8 +160,7 @@ class nnUNetTrainerEDAINv1(nnUNetTrainer):
 
         self.print_to_log_file(
             f"[EDAINv1] lr_multipliers={self.edain_lr_multipliers} "
-            f"use_power={self.use_power_transform} "
-            f"rescale_p2p98={self.rescale_with_percentile}")
+            f"use_power={self.use_power_transform}")
 
     # ----- override: configure_optimizers (per-sublayer LR groups) -----
     def configure_optimizers(self):
